@@ -17,14 +17,14 @@ You can also install **PyHPO** from source by cloning the git repository:
 
 .. code:: bash
 
-    git clone https://github.com/Centogene/pyhpo.git
+    git clone https://github.com/sohamtatwawadi/HPO_DIAGNOSTICS.git
 
 
 I recommend to use a virtual environment to use **PyHPO**:
 
 .. code:: bash
 
-    cd pyhpo
+    cd HPO_DIAGNOSTICS
     virtualenv venv
     source ./venv/bin/activate
 
