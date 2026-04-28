@@ -12,7 +12,8 @@ FROM python:3.11-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 COPY backend/requirements.txt /app/backend/
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir scipy pandas && \
+    pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY backend /app/backend
 COPY --from=frontend /src/dist /app/static
 WORKDIR /app/backend
