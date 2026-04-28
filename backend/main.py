@@ -243,9 +243,18 @@ def cohort(body: CohortInput):
         raise HTTPException(500, str(exc)) from exc
 
 
-# Production (Docker/Railway): Vite build copied to <parent-of-backend>/static/
-_static_dir = Path(__file__).resolve().parent.parent / "static"
-if _static_dir.is_dir() and (_static_dir / "index.html").is_file():
+# Production (Docker/Railway): Dockerfile copies Vite dist to ./static next to main.py (/app/static).
+# Local optional: repo-root static/ for `cp -r frontend/dist ../static` from backend/.
+_backend_dir_for_static = Path(__file__).resolve().parent
+_static_candidates = (
+    _backend_dir_for_static / "static",
+    _backend_dir_for_static.parent / "static",
+)
+_static_dir = next(
+    (p for p in _static_candidates if p.is_dir() and (p / "index.html").is_file()),
+    None,
+)
+if _static_dir is not None:
     from fastapi.staticfiles import StaticFiles
 
     app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="spa")
