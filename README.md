@@ -1,6 +1,6 @@
 # HPO Diagnostics
 
-React (Vite) + FastAPI + [PyHPO](https://github.com/COMBINE-lab/pyhpo) clinical phenotype workspace: differential diagnosis, similarity, gene/cohort tools, disease deep-dive, IC profiler, and a 7-step workflow.
+React (Vite) + FastAPI + [PyHPO on PyPI](https://pypi.org/project/pyhpo/) clinical phenotype workspace: differential diagnosis, similarity, gene/cohort tools, disease deep-dive, IC profiler, and a 7-step workflow.
 
 ## Local development
 
