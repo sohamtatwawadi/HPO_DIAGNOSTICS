@@ -1,0 +1,5 @@
+# Basic Streamlit app (run from repo root: streamlit run app/main.py)
+# pyhpo is loaded from the repo via app/_path.py — no editable install required.
+streamlit>=1.28.0
+pandas>=2.0.0
+pydantic>=2

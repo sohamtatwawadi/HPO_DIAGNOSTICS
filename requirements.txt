@@ -1,2 +1,15 @@
-scipy
-pydantic>=2
+# backend/requirements.txt
+#
+# numpy and scipy are intentionally NOT listed here.
+# They are installed in separate Dockerfile steps before this file is read,
+# so pip's resolver sees them as already-satisfied and does zero work for them.
+# Listing them here would cause pip to re-resolve their entire dependency graph
+# a second time, doubling peak memory usage.
+
+fastapi>=0.111,<0.116
+uvicorn[standard]>=0.29,<0.35
+pyhpo>=4.0,<5
+pydantic>=2.6,<3
+
+# pandas is NOT included — it is only used in the old Streamlit app.py,
+# not in main.py or pyhpo_service.py.

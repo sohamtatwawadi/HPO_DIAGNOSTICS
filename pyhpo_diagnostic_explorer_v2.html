@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PyHPO Diagnostic Explorer — Design v2</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --card: #141b26;
+      --card-border: #243044;
+      --accent: #3d8bfd;
+      --accent-soft: rgba(61, 139, 253, 0.15);
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --pill-bg: #1e2a3d;
+      --bar-track: #243044;
+      --bar-fill: linear-gradient(90deg, #238636, #3fb950);
+      --tree-line: #303d52;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+      display: flex;
+    }
+    aside {
+      width: 260px; flex-shrink: 0;
+      background: var(--card); border-right: 1px solid var(--card-border);
+      padding: 1.25rem;
+    }
+    aside h1 { font-size: 1rem; font-weight: 600; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+    aside .sub { font-size: 0.75rem; color: var(--muted); margin-bottom: 1.25rem; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem; }
+    .stat-card {
+      background: var(--bg); border: 1px solid var(--card-border);
+      border-radius: 10px; padding: 0.65rem 0.75rem;
+    }
+    .stat-card .v { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+    .stat-card .k { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    main { flex: 1; padding: 1.5rem 2rem; overflow: auto; }
+    .dx-card {
+      background: var(--card); border: 1px solid var(--card-border);
+      border-radius: 14px; padding: 1.25rem 1.5rem; margin-bottom: 1rem;
+    }
+    .dx-card h2 { margin: 0 0 0.75rem; font-size: 1.05rem; font-weight: 600; }
+    .pill {
+      display: inline-block; font-family: ui-monospace, monospace; font-size: 0.72rem;
+      padding: 0.15rem 0.55rem; border-radius: 999px; background: var(--pill-bg);
+      color: #c9d1d9; border: 1px solid var(--card-border);
+    }
+    table.dx-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    table.dx-table th {
+      text-align: left; color: var(--muted); font-weight: 500; font-size: 0.72rem;
+      text-transform: uppercase; letter-spacing: 0.06em; padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--card-border);
+    }
+    table.dx-table td { padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--card-border); vertical-align: middle; }
+    table.dx-table tr:hover td { background: var(--accent-soft); }
+    .dx-bar-wrap { min-width: 120px; }
+    .dx-bar {
+      height: 8px; border-radius: 4px; background: var(--bar-track); overflow: hidden;
+    }
+    .dx-bar > span {
+      display: block; height: 100%; border-radius: 4px;
+      background: var(--bar-fill);
+    }
+    .tree { margin: 0; padding: 0; list-style: none; }
+    .tree li { position: relative; padding: 0.35rem 0 0.35rem 1.1rem; }
+    .tree li::before {
+      content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+      background: var(--tree-line);
+    }
+    .tree li:last-child::before { bottom: auto; height: 1.1rem; }
+    .tree .node { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .nav { font-size: 0.8rem; color: var(--muted); margin-top: 1rem; }
+    .nav strong { color: var(--text); }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1>🧬 PyHPO Diagnostic Explorer</h1>
+    <div class="sub">Design reference v2 — mirrored in Streamlit</div>
+    <div class="nav"><strong>Module</strong><br />Differential Diagnosis</div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="k">HPO terms</div><div class="v">19,482</div></div>
+      <div class="stat-card"><div class="k">Genes</div><div class="v">4,812</div></div>
+      <div class="stat-card"><div class="k">OMIM</div><div class="v">8,901</div></div>
+      <div class="stat-card"><div class="k">Orpha</div><div class="v">6,234</div></div>
+    </div>
+  </aside>
+  <main>
+    <div class="dx-card">
+      <h2>Results — table with pills & score bars</h2>
+      <table class="dx-table">
+        <thead><tr><th>#</th><th>Label</th><th>ID</th><th>Count</th><th>Score</th><th>Signal</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Marfan syndrome</td>
+            <td><span class="pill">OMIM:154700</span></td>
+            <td><span class="pill">12</span></td>
+            <td>0.0012</td>
+            <td class="dx-bar-wrap"><div class="dx-bar"><span style="width:92%"></span></div></td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>Loeys-Dietz syndrome</td>
+            <td><span class="pill">OMIM:609192</span></td>
+            <td><span class="pill">9</span></td>
+            <td>0.0184</td>
+            <td class="dx-bar-wrap"><div class="dx-bar"><span style="width:61%"></span></div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="dx-card">
+      <h2>Path to root — tree view</h2>
+      <ul class="tree">
+        <li><div class="node"><span class="pill">HP:0002650</span> Scoliosis</div></li>
+        <li><div class="node"><span class="pill">HP:0010674</span> Abnormality of the curvature…</div></li>
+        <li><div class="node"><span class="pill">HP:0000925</span> Abnormality of the vertebral column</div></li>
+        <li><div class="node"><span class="pill">HP:0000001</span> All</div></li>
+      </ul>
+    </div>
+  </main>
+</body>
+</html>

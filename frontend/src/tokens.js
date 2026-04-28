@@ -1,0 +1,20 @@
+/** Clinical blue / white design tokens — do not deviate. */
+export const C = {
+  pageBg: "#F0F4FA",
+  card: "#FFFFFF",
+  sidebar: "#0F2A52",
+  accent: "#2563EB",
+  text: "#0F172A",
+  textSecondary: "#475569",
+  textMuted: "#94A3B8",
+  sidebarText: "#E2EAF4",
+  sidebarMuted: "#7B9DC4",
+  border: "#E2E8F0",
+  borderEmphasis: "#CBD5E1",
+  green: "#16A34A",
+  amber: "#D97706",
+  red: "#DC2626",
+  shadow: "0 1px 3px rgba(0,0,0,.06)",
+  fontUi: '"DM Sans", system-ui, sans-serif',
+  fontMono: '"DM Mono", ui-monospace, monospace',
+};

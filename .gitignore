@@ -36,3 +36,13 @@ htmlcov
 
 # Installer logs
 pip-log.txt
+
+# Local env / tooling
+venv/
+.Rhistory
+
+# React diagnostics UI
+frontend/node_modules/
+
+# Export copy for https://github.com/sohamtatwawadi/HPO_DIAGNOSTICS (do not commit into pyhpo)
+HPO_DIAGNOSTICS/
