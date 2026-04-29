@@ -50,6 +50,10 @@ class EnrichmentInput(BaseModel):
     top_n: int = 20
     remove_modifiers: bool = True
     replace_obsolete: bool = True
+    mode: str = "diagnostic"
+    sim_kind: str = "omim"
+    sim_method: str = "resnik"
+    sim_combine: str = "funSimAvg"
 
 
 class SimilarityInput(BaseModel):
@@ -58,11 +62,13 @@ class SimilarityInput(BaseModel):
     kind: str = "omim"
     method: str = "resnik"
     combine: str = "BMA"
+    one_way: bool = False
 
 
 class VariantInput(BaseModel):
     hpo_queries: list[str]
     candidate_genes: list[str]
+    mode: str = "diagnostic"
 
 
 class SerializedBody(BaseModel):
@@ -140,6 +146,8 @@ def gene_hpo_enrichment(body: GeneHpoEnrichmentInput):
 def run_enrichment(body: EnrichmentInput):
     if body.source not in {"omim", "gene", "orpha", "decipher"}:
         raise HTTPException(400, "source must be omim | gene | orpha | decipher")
+    if body.mode not in {"diagnostic", "research"}:
+        raise HTTPException(400, "mode must be diagnostic | research")
     try:
         return svc.run_enrichment(
             body.queries,
@@ -147,6 +155,10 @@ def run_enrichment(body: EnrichmentInput):
             top_n=body.top_n,
             remove_modifiers=body.remove_modifiers,
             replace_obsolete=body.replace_obsolete,
+            mode=body.mode,
+            sim_kind=body.sim_kind,
+            sim_method=body.sim_method,
+            sim_combine=body.sim_combine,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -163,6 +175,7 @@ def compute_similarity(body: SimilarityInput):
             kind=body.kind,
             method=body.method,
             combine=body.combine,
+            one_way=body.one_way,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -172,8 +185,14 @@ def compute_similarity(body: SimilarityInput):
 
 @app.post("/api/variant-prioritize")
 def prioritize_variants(body: VariantInput):
+    if body.mode not in {"diagnostic", "research"}:
+        raise HTTPException(400, "mode must be diagnostic | research")
     try:
-        return svc.prioritize_variants(body.hpo_queries, body.candidate_genes)
+        return svc.prioritize_variants(
+            body.hpo_queries,
+            body.candidate_genes,
+            mode=body.mode,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

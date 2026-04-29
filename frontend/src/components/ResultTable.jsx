@@ -1,6 +1,6 @@
 import { C } from "../tokens";
 
-export default function ResultTable({ title, headers, rows }) {
+export default function ResultTable({ title, headers, rows, columnHelp }) {
   return (
     <div style={{ marginTop: 16 }}>
       {title && (
@@ -10,9 +10,10 @@ export default function ResultTable({ title, headers, rows }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.pageBg }}>
-              {headers.map((h) => (
+              {headers.map((h, i) => (
                 <th
-                  key={h}
+                  key={`${String(h)}-${i}`}
+                  title={columnHelp?.[i]}
                   style={{
                     textAlign: "left",
                     padding: "10px 12px",
@@ -32,6 +33,7 @@ export default function ResultTable({ title, headers, rows }) {
                 {cells.map((cell, ci) => (
                   <td
                     key={ci}
+                    title={columnHelp?.[ci]}
                     style={{
                       padding: "10px 12px",
                       borderBottom: `1px solid ${C.border}`,

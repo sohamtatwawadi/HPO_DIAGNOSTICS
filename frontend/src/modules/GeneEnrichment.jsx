@@ -8,7 +8,7 @@ import ResultTable from "../components/ResultTable";
 import Pill from "../components/Pill";
 import ScoreBar from "../components/ScoreBar";
 import { useGeneHpoEnrichment } from "../hooks/useAPI";
-import { linesToQueries, scoreWidths } from "../lib/utils";
+import { linesToQueries, scoreWidths, SIGNAL_TOOLTIP_GENE_HPO, GENE_HPO_COLUMN_HELP } from "../lib/utils";
 
 export default function GeneEnrichment() {
   const [genes, setGenes] = useState("BRCA1\nTP53\nFBN1");
@@ -29,7 +29,7 @@ export default function GeneEnrichment() {
         <Pill key={i}>{d.id}</Pill>,
         d.count,
         <span style={{ fontFamily: C.fontMono }}>{d.enrichment.toExponential(3)}</span>,
-        <ScoreBar pct={w} />,
+        <ScoreBar pct={w} title={SIGNAL_TOOLTIP_GENE_HPO} />,
       ];
     }) ?? [];
 
@@ -70,6 +70,7 @@ export default function GeneEnrichment() {
               title="Enriched HPO terms"
               headers={["#", "HPO term", "ID", "Count", "Enrichment", "Signal"]}
               rows={rows}
+              columnHelp={GENE_HPO_COLUMN_HELP}
             />
           </>
         )}

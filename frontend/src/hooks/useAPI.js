@@ -56,28 +56,37 @@ export function useICProfile() {
 
 export function useEnrichment() {
   return useMutation({
-    mutationFn: ({ queries, source, top_n = 20 }) =>
+    mutationFn: (body) =>
       post("/api/enrichment", {
-        queries,
-        source,
-        top_n,
         remove_modifiers: true,
         replace_obsolete: true,
+        mode: "diagnostic",
+        top_n: 20,
+        ...body,
       }),
   });
 }
 
 export function useSimilarity() {
   return useMutation({
-    mutationFn: ({ patient1, patient2, kind, method, combine }) =>
-      post("/api/similarity", { patient1, patient2, kind, method, combine }),
+    mutationFn: (body) =>
+      post("/api/similarity", {
+        kind: "omim",
+        method: "resnik",
+        combine: "BMA",
+        one_way: false,
+        ...body,
+      }),
   });
 }
 
 export function useVariantPrioritize() {
   return useMutation({
-    mutationFn: ({ hpo_queries, candidate_genes }) =>
-      post("/api/variant-prioritize", { hpo_queries, candidate_genes }),
+    mutationFn: (body) =>
+      post("/api/variant-prioritize", {
+        mode: "diagnostic",
+        ...body,
+      }),
   });
 }
 

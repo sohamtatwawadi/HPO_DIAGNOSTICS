@@ -18,6 +18,7 @@ export default function Step6Validate({ stepData, setStepData, onNext }) {
       kind: "omim",
       method: "resnik",
       combine: "BMA",
+      one_way: true,
     });
     setStepData((s) => ({
       ...s,
@@ -29,7 +30,9 @@ export default function Step6Validate({ stepData, setStepData, onNext }) {
 
   return (
     <div>
-      <p style={{ color: C.textSecondary, fontSize: 14 }}>GET /api/disease + POST /api/similarity vs disease HPO.</p>
+      <p style={{ color: C.textSecondary, fontSize: 14 }}>
+        GET /api/disease + POST /api/similarity (one_way: patient→disease profile).
+      </p>
       <Input label="OMIM id or disease name" value={dq} onChange={(e) => setDq(e.target.value)} />
       <CTA style={{ marginTop: 10 }} onClick={run} disabled={dm.isPending || sm.isPending}>
         {dm.isPending || sm.isPending ? "Running…" : "Validate candidate disease"}

@@ -20,7 +20,7 @@ export default function ReportBuilder() {
   const build = async () => {
     const queries = linesToQueries(hpo);
     const g = linesToQueries(genes);
-    await ddx.mutateAsync({ queries, source: "omim", top_n: 10 });
+    await ddx.mutateAsync({ queries, source: "omim", top_n: 10, mode: "diagnostic" });
     if (queries.length >= 2) {
       await sim.mutateAsync({
         patient1: [queries[0]],
@@ -30,7 +30,7 @@ export default function ReportBuilder() {
         combine: "BMA",
       });
     }
-    if (g.length) await vp.mutateAsync({ hpo_queries: queries, candidate_genes: g });
+    if (g.length) await vp.mutateAsync({ hpo_queries: queries, candidate_genes: g, mode: "diagnostic" });
   };
 
   const bundle = {
@@ -47,7 +47,7 @@ export default function ReportBuilder() {
     <div>
       <Topbar
         title="Report builder"
-        subtitle="Compose a JSON evidence bundle from enrichment, similarity, and variant prioritization."
+        subtitle="Compose a JSON evidence bundle from diagnostic ranking (similarity + coverage), similarity, and variant prioritization."
       />
       <Card>
         <label style={{ fontSize: 13, fontWeight: 600, color: C.text }}>

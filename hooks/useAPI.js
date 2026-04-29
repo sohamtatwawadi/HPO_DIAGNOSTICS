@@ -45,12 +45,24 @@ export const useResolveTerms = () =>
 
 export const useICProfile = () => useMutation({ mutationFn: (body) => apiPost("/api/ic-profile", body) });
 
-export const useEnrichment = () => useMutation({ mutationFn: (body) => apiPost("/api/enrichment", body) });
+export const useEnrichment = () =>
+  useMutation({
+    mutationFn: (body) =>
+      apiPost("/api/enrichment", {
+        remove_modifiers: true,
+        replace_obsolete: true,
+        mode: "diagnostic",
+        top_n: 20,
+        ...body,
+      }),
+  });
 
 export const useSimilarity = () => useMutation({ mutationFn: (body) => apiPost("/api/similarity", body) });
 
 export const useVariantPrioritize = () =>
-  useMutation({ mutationFn: (body) => apiPost("/api/variant-prioritize", body) });
+  useMutation({
+    mutationFn: (body) => apiPost("/api/variant-prioritize", { mode: "diagnostic", ...body }),
+  });
 
 export const useGeneHPO = () => useMutation({ mutationFn: (body) => apiPost("/api/gene-hpo-enrichment", body) });
 

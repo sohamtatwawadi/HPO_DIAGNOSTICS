@@ -99,11 +99,70 @@ const NAV = [
 const WORKFLOW_STEPS = [
   { id:1, label:"Enter phenotypes",       api:"HPOSet.from_queries()"         },
   { id:2, label:"IC specificity check",   api:"term.information_content"      },
-  { id:3, label:"Disease enrichment",     api:"EnrichmentModel('omim')"       },
-  { id:4, label:"Gene prioritisation",    api:"EnrichmentModel('gene')"       },
+  { id:3, label:"Disease ranking",        api:"HPOSet.similarity vs OMIM (diagnostic)" },
+  { id:4, label:"Gene ranking",           api:"HPOSet.similarity vs genes (diagnostic)" },
   { id:5, label:"Cohort matching",        api:"HPOSet.similarity()"           },
   { id:6, label:"Validate disease profile",api:"disease.hpo_set.similarity()" },
   { id:7, label:"Save & retrieve",        api:"hposet.serialize()"            },
+];
+
+const SIGNAL_TOOLTIP = {
+  diagnostic:
+    "How rows are ranked (server): (1) semantic similarity — Resnik with funSimAvg in the patient→entity direction only (each patient term scored against the entity’s HPO set, then averaged; avoids BMA’s bidirectional penalty on large annotation sets); (2) coverage = exact overlapping terms ÷ number of your terms; (3) overlap count as a tiebreaker. " +
+    "How this bar is drawn (UI only): in result tables, similarity is scaled between the lowest and highest similarity on this page (8–100% bar width). In compact gene/variant rows, the bar is similarity ÷ the strongest similarity in that list (0–100%). The bar never mixes coverage or overlap and does not change server rank.",
+  research:
+    "How rows are ranked (server): hypergeometric enrichment p-value (stronger association to your HPO profile = smaller p-value, listed first). " +
+    "How this bar is drawn (UI only): in tables, p-values are min–max scaled so smaller p-values yield a longer bar (8–100%). In compact variant rows, the bar uses 1 − (p ÷ the largest p in the list). The bar does not change server rank.",
+};
+
+const SIGNAL_TOOLTIP_GENE_HPO =
+  "Hypergeometric enrichment of HPO terms across your gene list. Bar length maps enrichment scores in this table so stronger enrichment (typically lower p-value) shows a longer bar.";
+
+const ENRICHMENT_COLUMN_HELP = {
+  diagnostic: [
+    "Rank: order returned by the server — higher similarity first, then higher coverage, then larger overlap.",
+    "Name of the disease or gene from the PyHPO ontology.",
+    "Identifier for the selected source (e.g. OMIM id).",
+    "Similarity: PyHPO HPOSet.similarity(patient, entity, kind=OMIM IC by default, method=Resnik, combine=funSimAvg). Patient→entity only: for each patient term, best Resnik match into the entity’s annotations, then averaged across patient terms. Higher = better phenotypic fit for diagnosis.",
+    "Coverage: (number of your patient HPO terms that appear exactly in the entity’s annotation set) divided by the number of terms in your cleaned patient set. Shown as a percentage; equals overlap ÷ patient term count.",
+    "Overlap: count of your patient HPO terms that have an exact ID match in the entity’s HPO annotations.",
+    SIGNAL_TOOLTIP.diagnostic,
+  ],
+  research: [
+    "Rank: strongest hypergeometric hit first (smallest p-value among returned rows).",
+    "Name of the disease or gene from the PyHPO ontology.",
+    "Identifier for the selected source (e.g. OMIM id).",
+    "Count: how many of your patient HPO terms overlap the entity’s annotations — used as the overlap statistic in the hypergeometric enrichment test.",
+    "p-value: hypergeometric enrichment from PyHPO EnrichmentModel; smaller = stronger association between your HPO profile and this entity than expected by chance.",
+    SIGNAL_TOOLTIP.research,
+  ],
+};
+
+const VARIANT_COLUMN_HELP = {
+  diagnostic: [
+    "Rank: order among your submitted genes after server scoring (similarity, then coverage, then overlap).",
+    "Gene symbol (HGNC) resolved in the ontology.",
+    "Similarity: same as DDx — Resnik + funSimAvg (patient→gene) vs this gene’s annotated HPO terms (IC from OMIM by default).",
+    "Coverage: overlapping HPO term count ÷ number of terms in your cleaned patient set.",
+    "Overlap: exact count of your patient HPO terms found on this gene.",
+    "Match / No overlap: whether the gene shares at least one exact HPO term with the patient (server field has_match).",
+    SIGNAL_TOOLTIP.diagnostic,
+  ],
+  research: [
+    "Rank among your candidates after filtering genome-wide hypergeometric results to your gene list.",
+    "Gene symbol.",
+    "p-value: hypergeometric enrichment score for this gene vs your HPO profile (from PyHPO).",
+    SIGNAL_TOOLTIP.research,
+  ],
+};
+
+const GENE_HPO_COLUMN_HELP = [
+  "Rank by enrichment strength in this result set.",
+  "HPO term label.",
+  "HPO identifier (HP:…).",
+  "Count: how many genes in your list are annotated with this term (used in the test).",
+  "Enrichment: hypergeometric p-value from HPOEnrichment across your gene list.",
+  SIGNAL_TOOLTIP_GENE_HPO,
 ];
 
 // ─── SHARED PRIMITIVES ────────────────────────────────────────────────────────
@@ -161,9 +220,18 @@ function Pill({ children, mono = true }) {
   );
 }
 
-function ScoreBar({ pct, color = C.accent }) {
+function ScoreBar({ pct, color = C.accent, title }) {
   return (
-    <div style={{ background: C.blue50, borderRadius: 4, height: 6, minWidth: 80, overflow: "hidden" }}>
+    <div
+      title={title}
+      style={{
+        background: C.blue50,
+        borderRadius: 4,
+        height: 6,
+        minWidth: 80,
+        overflow: "hidden",
+      }}
+    >
       <div style={{ width: `${Math.max(4, Math.min(100, pct))}%`, height: 6,
         background: color, borderRadius: 4, transition: "width .35s ease" }} />
     </div>
@@ -248,15 +316,19 @@ function PageHeader({ title, sub, api }) {
   );
 }
 
-function ResultTable({ headers, rows }) {
+function ResultTable({ headers, rows, columnHelp }) {
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
       <thead>
         <tr>
-          {headers.map(h => (
-            <th key={h} style={{ textAlign: "left", fontSize: 10, color: C.textMuted, fontWeight: 700,
-              textTransform: "uppercase", letterSpacing: ".06em", padding: "6px 8px",
-              borderBottom: `1px solid ${C.border}`, fontFamily: C.sans }}>
+          {headers.map((h, i) => (
+            <th
+              key={`${String(h)}-${i}`}
+              title={columnHelp?.[i]}
+              style={{ textAlign: "left", fontSize: 10, color: C.textMuted, fontWeight: 700,
+                textTransform: "uppercase", letterSpacing: ".06em", padding: "6px 8px",
+                borderBottom: `1px solid ${C.border}`, fontFamily: C.sans }}
+            >
               {h}
             </th>
           ))}
@@ -266,7 +338,7 @@ function ResultTable({ headers, rows }) {
         {rows.map((row, i) => (
           <tr key={i} style={{ background: i === 0 ? C.accentSoft : "transparent" }}>
             {row.map((cell, j) => (
-              <td key={j} style={{ padding: "8px 8px", borderBottom: `1px solid ${C.border}`,
+              <td key={j} title={columnHelp?.[j]} style={{ padding: "8px 8px", borderBottom: `1px solid ${C.border}`,
                 color: C.text, verticalAlign: "middle", fontFamily: C.sans }}>
                 {cell}
               </td>
@@ -516,31 +588,43 @@ function WFStep3({ state, onComplete }) {
 
   useEffect(() => {
     if (state?.terms?.length) {
-      mut.mutate({ queries: state.terms.map((t) => t.id), source: "omim", top_n: 10 });
+      mut.mutate({ queries: state.terms.map((t) => t.id), source: "omim", top_n: 10, mode: "diagnostic" });
     }
   }, [state?.terms]);
 
   const diseases = mut.data?.results ?? [];
-  const widths = scoreWidths(
-    diseases.map((d) => d.enrichment),
-    { lowerIsBetter: true },
-  );
+  const isResearch = mut.data?.mode === "research";
+  const widths = isResearch
+    ? scoreWidths(
+        diseases.map((d) => d.enrichment),
+        { lowerIsBetter: true },
+      )
+    : scoreWidths(
+        diseases.map((d) => d.similarity),
+        { lowerIsBetter: false },
+      );
 
   return (
     <div>
-      <SectionTitle>PyHPO: EnrichmentModel("omim") · enrichment(method="hypergeom")</SectionTitle>
+      <SectionTitle>PyHPO: diagnostic disease ranking · HPOSet.similarity vs OMIM (mode=diagnostic)</SectionTitle>
       <ApiState mutation={mut} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 14 }}>
         <MetricCard
           label="Top disease"
           value={diseases[0]?.name ?? "—"}
-          sub={diseases[0] ? `p = ${diseases[0].enrichment.toExponential(2)}` : ""}
+          sub={
+            diseases[0]
+              ? isResearch
+                ? `p = ${diseases[0].enrichment.toExponential(2)}`
+                : `sim = ${diseases[0].similarity.toFixed(3)}`
+              : ""
+          }
           accent={C.accent}
         />
         <MetricCard
           label="Terms matched"
-          value={diseases[0] ? `${diseases[0].count}/${mut.data?.hposet_size ?? "—"}` : "—"}
-          sub="enrichment hit"
+          value={diseases[0] ? `${isResearch ? diseases[0].count : diseases[0].overlap}/${mut.data?.hposet_size ?? "—"}` : "—"}
+          sub={isResearch ? "hypergeom overlap" : "exact overlap / patient"}
           accent={C.green}
         />
         <MetricCard label="Candidates" value={String(diseases.length)} sub="OMIM source" />
@@ -548,12 +632,17 @@ function WFStep3({ state, onComplete }) {
       <Card style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>Ranked differential diagnoses</div>
         {diseases.length === 0 ? (
-          <div style={{ color: C.textMuted, fontSize: 13 }}>Run enrichment from step 1 terms…</div>
+          <div style={{ color: C.textMuted, fontSize: 13 }}>Run ranking from step 1 terms…</div>
         ) : (
           <ResultTable
-            headers={["#", "Disease", "OMIM ID", "Count", "p-value", "Signal"]}
+            headers={
+              isResearch
+                ? ["#", "Disease", "OMIM ID", "Count", "p-value", "Signal"]
+                : ["#", "Disease", "OMIM ID", "Similarity", "Coverage", "Overlap", "Signal"]
+            }
             rows={diseases.map((d, i) => [
               <span
+                key={`r-${i}`}
                 style={{
                   fontSize: 12,
                   color: i === 0 ? C.accent : C.textMuted,
@@ -563,12 +652,30 @@ function WFStep3({ state, onComplete }) {
               >
                 {d.rank}
               </span>,
-              <span style={{ fontWeight: i === 0 ? 700 : 400 }}>{d.name}</span>,
-              <Pill>{d.id}</Pill>,
-              <span style={{ fontFamily: C.mono }}>{d.count}</span>,
-              <span style={{ fontFamily: C.mono, color: i === 0 ? C.accent : C.textSub }}>{d.enrichment.toFixed(4)}</span>,
-              <ScoreBar pct={widths[i] ?? 8} color={i === 0 ? C.accent : C.textMuted} />,
+              <span key={`n-${i}`} style={{ fontWeight: i === 0 ? 700 : 400 }}>
+                {d.name}
+              </span>,
+              <Pill key={`p-${i}`}>{d.id}</Pill>,
+              ...(isResearch
+                ? [
+                    <span key={`c-${i}`} style={{ fontFamily: C.mono }}>{d.count}</span>,
+                    <span key={`e-${i}`} style={{ fontFamily: C.mono, color: i === 0 ? C.accent : C.textSub }}>
+                      {d.enrichment.toFixed(4)}
+                    </span>,
+                  ]
+                : [
+                    <span key={`s-${i}`} style={{ fontFamily: C.mono }}>{d.similarity.toFixed(4)}</span>,
+                    <span key={`v-${i}`} style={{ fontFamily: C.mono }}>{`${(d.coverage * 100).toFixed(0)}%`}</span>,
+                    <span key={`o-${i}`} style={{ fontFamily: C.mono }}>{d.overlap}</span>,
+                  ]),
+              <ScoreBar
+                key={`b-${i}`}
+                pct={widths[i] ?? 8}
+                color={i === 0 ? C.accent : C.textMuted}
+                title={isResearch ? SIGNAL_TOOLTIP.research : SIGNAL_TOOLTIP.diagnostic}
+              />,
             ])}
+            columnHelp={isResearch ? ENRICHMENT_COLUMN_HELP.research : ENRICHMENT_COLUMN_HELP.diagnostic}
           />
         )}
       </Card>
@@ -584,38 +691,55 @@ function WFStep4({ state, onComplete }) {
 
   useEffect(() => {
     if (state?.terms?.length) {
-      mut.mutate({ queries: state.terms.map((t) => t.id), source: "gene", top_n: 15 });
+      mut.mutate({ queries: state.terms.map((t) => t.id), source: "gene", top_n: 15, mode: "diagnostic" });
     }
   }, [state?.terms]);
 
   const genes = mut.data?.results ?? [];
-  const maxScore = genes.length ? Math.max(...genes.map((g) => g.enrichment)) : 1;
+  const isResearch = mut.data?.mode === "research";
+  const maxP = genes.length ? Math.max(...genes.map((g) => g.enrichment)) : 1;
+  const maxSim = genes.length ? Math.max(...genes.map((g) => g.similarity ?? 0)) : 1;
   const pColor = (s) => (s < 0.001 ? C.green : s < 0.01 ? C.accent : C.amber);
   const pLabel = (s) => (s < 0.001 ? "P1" : s < 0.01 ? "P2" : "P3");
   const pVariant = (s) => (s < 0.001 ? "green" : s < 0.01 ? "accent" : "amber");
+  const simColor = (s) => (s >= 0.65 ? C.green : s >= 0.45 ? C.accent : C.amber);
+  const simLabel = (s) => (s >= 0.65 ? "S1" : s >= 0.45 ? "S2" : "S3");
+  const simVariant = (s) => (s >= 0.65 ? "green" : s >= 0.45 ? "accent" : "amber");
 
   return (
     <div>
-      <SectionTitle>PyHPO: EnrichmentModel("gene") cross-referenced with VCF candidate genes</SectionTitle>
+      <SectionTitle>PyHPO: diagnostic gene ranking · HPOSet.similarity vs genes (mode=diagnostic)</SectionTitle>
       <ApiState mutation={mut} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 14 }}>
         <MetricCard
           label="Top gene"
           value={genes[0]?.name ?? "—"}
-          sub={genes[0] ? `${genes[0].count} terms` : ""}
+          sub={
+            genes[0]
+              ? isResearch
+                ? `${genes[0].count} terms`
+                : `${(genes[0].coverage * 100).toFixed(0)}% cov · ${genes[0].overlap} overlap`
+              : ""
+          }
           accent={C.green}
         />
-        <MetricCard label="Gene hits" value={String(genes.length)} sub="enrichment rows" />
+        <MetricCard label="Gene hits" value={String(genes.length)} sub={isResearch ? "hypergeom rows" : "similarity-ranked"} />
         <MetricCard
-          label="Best p-value"
-          value={genes[0] ? genes[0].enrichment.toExponential(2) : "—"}
+          label={isResearch ? "Best p-value" : "Best similarity"}
+          value={
+            genes[0]
+              ? isResearch
+                ? genes[0].enrichment.toExponential(2)
+                : genes[0].similarity.toFixed(4)
+              : "—"
+          }
           accent={C.accent}
         />
       </div>
       <Card style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>Gene priority ranking</div>
         {genes.length === 0 ? (
-          <div style={{ color: C.textMuted, fontSize: 13 }}>No enrichment results.</div>
+          <div style={{ color: C.textMuted, fontSize: 13 }}>No results.</div>
         ) : (
           genes.map((g, i) => (
             <div
@@ -643,13 +767,31 @@ function WFStep4({ state, onComplete }) {
                 {g.name}
               </span>
               <div style={{ flex: 1 }}>
-                <ScoreBar pct={maxScore > 0 ? (1 - g.enrichment / maxScore) * 100 : 8} color={pColor(g.enrichment)} />
+                {isResearch ? (
+                  <ScoreBar
+                    pct={maxP > 0 ? (1 - g.enrichment / maxP) * 100 : 8}
+                    color={pColor(g.enrichment)}
+                    title={SIGNAL_TOOLTIP.research}
+                  />
+                ) : (
+                  <ScoreBar
+                    pct={maxSim > 0 ? (g.similarity / maxSim) * 100 : 8}
+                    color={simColor(g.similarity)}
+                    title={SIGNAL_TOOLTIP.diagnostic}
+                  />
+                )}
               </div>
               <span style={{ fontSize: 11, fontFamily: C.mono, color: C.textMuted, minWidth: 52 }}>
-                {g.enrichment.toFixed(4)}
+                {isResearch ? g.enrichment.toFixed(4) : g.similarity.toFixed(4)}
               </span>
-              <span style={{ fontSize: 12, color: C.textMuted }}>{g.count} terms</span>
-              <Badge variant={pVariant(g.enrichment)}>{pLabel(g.enrichment)}</Badge>
+              <span style={{ fontSize: 12, color: C.textMuted }}>
+                {isResearch ? `${g.count} terms` : `${g.overlap} / ${mut.data?.hposet_size ?? "—"}`}
+              </span>
+              {isResearch ? (
+                <Badge variant={pVariant(g.enrichment)}>{pLabel(g.enrichment)}</Badge>
+              ) : (
+                <Badge variant={simVariant(g.similarity)}>{simLabel(g.similarity)}</Badge>
+              )}
             </div>
           ))
         )}
@@ -839,7 +981,14 @@ function WFStep6({ state, onComplete }) {
     if (!state?.terms?.length || !diseaseQ.data?.hpo_terms?.length) return;
     const patient1 = state.terms.map((t) => t.id);
     const patient2 = diseaseQ.data.hpo_terms.map((t) => t.id);
-    simMut.mutate({ patient1, patient2, kind: "omim", method: "resnik", combine: "BMA" });
+    simMut.mutate({
+      patient1,
+      patient2,
+      kind: "omim",
+      method: "resnik",
+      combine: "BMA",
+      one_way: true,
+    });
   }, [diseaseQ.data, state?.terms]);
 
   const shared = simMut.data?.shared ?? [];
@@ -869,7 +1018,7 @@ function WFStep6({ state, onComplete }) {
         <MetricCard
           label="Patient ↔ disease similarity"
           value={sim != null ? sim.toFixed(3) : "—"}
-          sub="Resnik / BMA"
+          sub="Resnik · patient→disease (one_way)"
           accent={C.accent}
         />
         <MetricCard
@@ -1087,27 +1236,44 @@ function ModuleDDX() {
   const [terms, setTerms] = useState("");
   const [source, setSource] = useState("omim");
   const [topN, setTopN] = useState(10);
+  const [mode, setMode] = useState("diagnostic");
   const mut = useEnrichment();
 
   const handleRun = () => {
     const queries = terms.split("\n").map((l) => l.trim()).filter(Boolean);
     if (!queries.length) return;
-    mut.mutate({ queries, source, top_n: topN });
+    mut.mutate({ queries, source, top_n: topN, mode });
   };
 
   const diseases = mut.data?.results ?? [];
-  const widths = scoreWidths(
-    diseases.map((d) => d.enrichment),
-    { lowerIsBetter: true },
-  );
+  const isResearch = mut.data?.mode === "research";
+  const widths = isResearch
+    ? scoreWidths(
+        diseases.map((d) => d.enrichment),
+        { lowerIsBetter: true },
+      )
+    : scoreWidths(
+        diseases.map((d) => d.similarity),
+        { lowerIsBetter: false },
+      );
 
   return (
     <div>
-      <PageHeader title="Differential Diagnosis"
-        sub="Rank OMIM / Orpha / DECIPHER entries by hypergeometric enrichment for your HPO profile."
-        api="EnrichmentModel(source).enrichment(method='hypergeom', hposet=patient)" />
+      <PageHeader
+        title="Differential Diagnosis"
+        sub={
+          mode === "research"
+            ? "Research mode: hypergeometric enrichment (GWAS-style)."
+            : "Diagnostic mode: semantic similarity plus coverage of your HPO terms vs OMIM / Orpha / DECIPHER / genes."
+        }
+        api={
+          mode === "research"
+            ? "EnrichmentModel(source).enrichment(method='hypergeom', hposet=patient)"
+            : "rank_by_similarity(patient_hposet, catalog, sim_kind / sim_method / sim_combine)"
+        }
+      />
       <Card style={{ marginBottom: 14 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 140px", gap: 12, alignItems: "end" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 120px 160px", gap: 12, alignItems: "end" }}>
           <div>
             <div style={s.label}>HPO terms (one per line)</div>
             <Textarea rows={6} value={terms} onChange={(e) => setTerms(e.target.value)} />
@@ -1117,13 +1283,33 @@ function ModuleDDX() {
             <select value={source} onChange={e => setSource(e.target.value)}
               style={{ width: "100%", padding: "8px 10px", border: `1px solid ${C.border}`,
                 borderRadius: 8, fontSize: 13, color: C.text, background: C.surfaceAlt, fontFamily: C.sans }}>
-              <option>omim</option><option>orpha</option><option>decipher</option>
+              <option>omim</option><option>orpha</option><option>decipher</option><option>gene</option>
             </select>
             <div style={{ marginTop: 8 }}>
               <div style={s.label}>Top N: {topN}</div>
               <input type="range" min={5} max={50} value={topN}
                 onChange={e => setTopN(+e.target.value)} style={{ width: "100%" }} />
             </div>
+          </div>
+          <div>
+            <div style={s.label}>Analysis mode</div>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.text,
+                background: C.surfaceAlt,
+                fontFamily: C.sans,
+              }}
+            >
+              <option value="diagnostic">Diagnostic (similarity)</option>
+              <option value="research">Research (hypergeom)</option>
+            </select>
           </div>
           <div>
             <CTA onClick={handleRun} disabled={mut.isPending}>Run diagnosis</CTA>
@@ -1134,18 +1320,39 @@ function ModuleDDX() {
       {mut.data && (
         <Card>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>
-            Ranked differential diagnoses <Badge variant="accent">{source.toUpperCase()}</Badge>
+            Ranked differential diagnoses <Badge variant="accent">{source.toUpperCase()}</Badge>{" "}
+            <Badge variant="guided">{mut.data.mode}</Badge>
           </div>
           <ResultTable
-            headers={["#", "Disease", "ID", "Count", "Enrichment", "Signal"]}
+            headers={
+              isResearch
+                ? ["#", "Disease", "ID", "Count", "p-value", "Signal"]
+                : ["#", "Disease", "ID", "Similarity", "Coverage", "Overlap", "Signal"]
+            }
             rows={diseases.map((d, i) => [
-              <span style={{ fontFamily: C.mono, color: i === 0 ? C.accent : C.textMuted }}>{d.rank}</span>,
-              <span style={{ fontWeight: i === 0 ? 700 : 400 }}>{d.name}</span>,
-              <Pill>{d.id}</Pill>,
-              <span style={{ fontFamily: C.mono }}>{d.count}</span>,
-              <span style={{ fontFamily: C.mono, color: i === 0 ? C.accent : C.textSub }}>{d.enrichment.toFixed(4)}</span>,
-              <ScoreBar pct={widths[i] ?? 8} color={i === 0 ? C.accent : C.textMuted} />,
+              <span key={`rk-${i}`} style={{ fontFamily: C.mono, color: i === 0 ? C.accent : C.textMuted }}>{d.rank}</span>,
+              <span key={`nm-${i}`} style={{ fontWeight: i === 0 ? 700 : 400 }}>{d.name}</span>,
+              <Pill key={`id-${i}`}>{d.id}</Pill>,
+              ...(isResearch
+                ? [
+                    <span key={`ct-${i}`} style={{ fontFamily: C.mono }}>{d.count}</span>,
+                    <span key={`en-${i}`} style={{ fontFamily: C.mono, color: i === 0 ? C.accent : C.textSub }}>
+                      {d.enrichment.toFixed(4)}
+                    </span>,
+                  ]
+                : [
+                    <span key={`si-${i}`} style={{ fontFamily: C.mono }}>{d.similarity.toFixed(4)}</span>,
+                    <span key={`cv-${i}`} style={{ fontFamily: C.mono }}>{`${(d.coverage * 100).toFixed(0)}%`}</span>,
+                    <span key={`ov-${i}`} style={{ fontFamily: C.mono }}>{d.overlap}</span>,
+                  ]),
+              <ScoreBar
+                key={`br-${i}`}
+                pct={widths[i] ?? 8}
+                color={i === 0 ? C.accent : C.textMuted}
+                title={isResearch ? SIGNAL_TOOLTIP.research : SIGNAL_TOOLTIP.diagnostic}
+              />,
             ])}
+            columnHelp={isResearch ? ENRICHMENT_COLUMN_HELP.research : ENRICHMENT_COLUMN_HELP.diagnostic}
           />
         </Card>
       )}
@@ -1320,13 +1527,14 @@ function ModuleGene() {
           <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>Enriched HPO terms</div>
           <ResultTable
             headers={["#", "HPO term", "HP ID", "Count", "Enrichment", "Signal"]}
+            columnHelp={GENE_HPO_COLUMN_HELP}
             rows={results.map((r, i) => [
               String(r.rank),
               r.name,
               <Pill key={`${r.id}-pill`}>{r.id}</Pill>,
               String(r.count),
               r.enrichment.toFixed(4),
-              <ScoreBar key={`${r.id}-bar`} pct={widths[i] ?? 8} color={C.accent} />,
+              <ScoreBar key={`${r.id}-bar`} pct={widths[i] ?? 8} color={C.accent} title={SIGNAL_TOOLTIP_GENE_HPO} />,
             ])}
           />
         </Card>
@@ -1477,24 +1685,60 @@ function ModuleCohort() {
 function ModuleVariant() {
   const [hpoTerms, setHpoTerms] = useState("");
   const [vcfGenes, setVcfGenes] = useState("");
+  const [mode, setMode] = useState("diagnostic");
   const mut = useVariantPrioritize();
 
   const handleRun = () => {
     const hpo_queries = hpoTerms.split("\n").map((l) => l.trim()).filter(Boolean);
     const candidate_genes = vcfGenes.split("\n").map((l) => l.trim()).filter(Boolean);
     if (!hpo_queries.length || !candidate_genes.length) return;
-    mut.mutate({ hpo_queries, candidate_genes });
+    mut.mutate({ hpo_queries, candidate_genes, mode });
   };
 
   const prioritized = mut.data?.prioritized ?? [];
   const missing = mut.data?.missing ?? [];
-  const maxScore = prioritized.length ? Math.max(...prioritized.map((g) => g.score)) : 1;
+  const isResearch = mut.data?.mode === "research";
+  const maxScore = prioritized.length ? Math.max(...prioritized.map((g) => g.score ?? 0)) : 1;
+  const maxSim = prioritized.length ? Math.max(...prioritized.map((g) => g.similarity ?? 0)) : 1;
+  const geneLabel = (g) => g.gene ?? g.name ?? "—";
 
   return (
     <div>
-      <PageHeader title="Variant Prioritizer"
-        sub="Re-rank VCF gene candidates by hypergeometric phenotype match."
-        api="EnrichmentModel('gene').enrichment() filtered to VCF gene list" />
+      <PageHeader
+        title="Variant Prioritizer"
+        sub={
+          mode === "research"
+            ? "Research mode: hypergeometric gene enrichment restricted to your VCF list."
+            : "Diagnostic mode: semantic similarity plus coverage for each candidate gene only."
+        }
+        api={
+          mode === "research"
+            ? "EnrichmentModel('gene').enrichment(hypergeom) filtered to candidates"
+            : "rank_by_similarity(patient_hposet, candidate_genes)"
+        }
+      />
+      <Card style={{ marginBottom: 14 }}>
+        <div style={s.label}>Analysis mode</div>
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
+          style={{
+            marginTop: 6,
+            maxWidth: 360,
+            width: "100%",
+            padding: "8px 10px",
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            fontSize: 13,
+            color: C.text,
+            background: C.surfaceAlt,
+            fontFamily: C.sans,
+          }}
+        >
+          <option value="diagnostic">Diagnostic (similarity)</option>
+          <option value="research">Research (hypergeometric)</option>
+        </select>
+      </Card>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
         <Card>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>Patient HPO terms</div>
@@ -1511,13 +1755,42 @@ function ModuleVariant() {
       <ApiState mutation={mut} />
       {mut.data && (
         <Card style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>Prioritized genes</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>
+            Prioritized genes <Badge variant="guided">{mut.data.mode}</Badge>
+          </div>
           {prioritized.map((g, i) => {
-            const pc = g.score < 0.001 ? C.green : g.score < 0.01 ? C.accent : C.amber;
-            const pv = g.score < 0.001 ? "green" : g.score < 0.01 ? "accent" : "amber";
+            const pc = isResearch
+              ? g.score < 0.001
+                ? C.green
+                : g.score < 0.01
+                  ? C.accent
+                  : C.amber
+              : (g.similarity ?? 0) >= 0.65
+                ? C.green
+                : (g.similarity ?? 0) >= 0.45
+                  ? C.accent
+                  : C.amber;
+            const pv = isResearch
+              ? g.score < 0.001
+                ? "green"
+                : g.score < 0.01
+                  ? "accent"
+                  : "amber"
+              : (g.similarity ?? 0) >= 0.65
+                ? "green"
+                : (g.similarity ?? 0) >= 0.45
+                  ? "accent"
+                  : "amber";
+            const barPct = isResearch
+              ? maxScore > 0
+                ? (1 - g.score / maxScore) * 100
+                : 8
+              : maxSim > 0
+                ? (g.similarity / maxSim) * 100
+                : 8;
             return (
               <div
-                key={g.gene}
+                key={geneLabel(g) + String(i)}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1538,19 +1811,25 @@ function ModuleVariant() {
                     minWidth: 64,
                   }}
                 >
-                  {g.gene}
+                  {geneLabel(g)}
                 </span>
                 <div style={{ flex: 1 }}>
-                  <ScoreBar pct={maxScore > 0 ? (1 - g.score / maxScore) * 100 : 8} color={pc} />
+                  <ScoreBar
+                    pct={barPct}
+                    color={pc}
+                    title={isResearch ? SIGNAL_TOOLTIP.research : SIGNAL_TOOLTIP.diagnostic}
+                  />
                 </div>
-                <span style={{ fontSize: 11, fontFamily: C.mono, color: C.textMuted }}>{g.score.toFixed(4)}</span>
-                <Badge variant={pv}>Priority {i + 1}</Badge>
+                <span style={{ fontSize: 11, fontFamily: C.mono, color: C.textMuted, minWidth: 120, textAlign: "right" }}>
+                  {isResearch ? g.score.toExponential(3) : `${g.similarity?.toFixed(4) ?? "—"} · ${((g.coverage ?? 0) * 100).toFixed(0)}%`}
+                </span>
+                <Badge variant={pv}>{isResearch ? `Priority ${i + 1}` : g.has_match === false || (g.overlap ?? 0) === 0 ? "No overlap" : `Overlap ${g.overlap}`}</Badge>
               </div>
             );
           })}
           {missing.map((sym) => (
             <div key={sym} style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>
-              {sym} — no HPO match
+              {sym} — {isResearch ? "no enrichment hit in candidate list" : "not in gene ontology"}
             </div>
           ))}
         </Card>
@@ -1575,7 +1854,14 @@ function ModuleDisease() {
     const patient1 = patientHpo.split(/[,\n]/).map((l) => l.trim()).filter(Boolean);
     const patient2 = diseaseQ.data.hpo_terms.map((t) => t.id);
     if (!patient1.length || !patient2.length) return;
-    simMut.mutate({ patient1, patient2, kind: "omim", method: "resnik", combine: "BMA" });
+    simMut.mutate({
+      patient1,
+      patient2,
+      kind: "omim",
+      method: "resnik",
+      combine: "BMA",
+      one_way: true,
+    });
   }, [diseaseQ.data, patientHpo]);
 
   const d = diseaseQ.data;
@@ -1670,7 +1956,7 @@ function ModuleDisease() {
             <MetricCard
               label="Patient similarity"
               value={simMut.data?.score != null ? simMut.data.score.toFixed(4) : patientHpo.trim() ? "—" : "—"}
-              sub="Resnik/BMA"
+              sub="Resnik · patient→disease (one_way)"
               accent={C.accent}
             />
             <MetricCard
@@ -1892,8 +2178,8 @@ function ModuleReport() {
   return (
     <div>
       <PageHeader title="Report Builder"
-        sub="Generate a complete clinical summary combining IC profile, differential diagnosis, and gene candidates."
-        api="IC + EnrichmentModel('omim') + EnrichmentModel('gene') combined export" />
+        sub="Generate a complete clinical summary combining IC profile, diagnostic disease/gene ranking, and exports."
+        api="IC + POST /api/enrichment (diagnostic) + POST /api/variant-prioritize (diagnostic) combined export" />
       <Card style={{ marginBottom: 14 }}>
         <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12 }}>
           <div>

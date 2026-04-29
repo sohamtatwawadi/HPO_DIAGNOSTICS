@@ -25,7 +25,14 @@ export default function DiseaseDeepDive() {
     const ids = d.hpo_terms.map((t) => t.id);
     const p1 = linesToQueries(patient);
     if (!p1.length) return;
-    simM.mutate({ patient1: p1, patient2: ids, kind: "omim", method: "resnik", combine: "BMA" });
+    simM.mutate({
+      patient1: p1,
+      patient2: ids,
+      kind: "omim",
+      method: "resnik",
+      combine: "BMA",
+      one_way: true,
+    });
   };
 
   const geneRows = (diseaseM.data?.genes ?? []).map((g) => [g.name, g.id]);

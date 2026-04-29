@@ -1,10 +1,14 @@
 import { C } from "../tokens";
 
-/** pct: 0–100 bar width (lower enrichment p-values → higher signal in UI). */
-export default function ScoreBar({ pct }) {
+/**
+ * @param {number} pct — 0–100 bar fill width
+ * @param {string} [title] — native hover tooltip (e.g. SIGNAL_TOOLTIP.diagnostic)
+ */
+export default function ScoreBar({ pct, title }) {
   const w = Math.min(100, Math.max(4, pct));
   return (
     <div
+      title={title}
       style={{
         height: 8,
         borderRadius: 4,
