@@ -88,6 +88,15 @@ class GeneHpoEnrichmentInput(BaseModel):
     top_n: int = 80
 
 
+class GenePrioritizationInput(BaseModel):
+    queries: list[str]
+    remove_modifiers: bool = False
+    replace_obsolete: bool = True
+    expand_ic: bool = True
+    ic_expansion_threshold: float = 2.0
+    top_n: int = 20
+
+
 class TermPathInput(BaseModel):
     term_a: str
     term_b: str
@@ -134,6 +143,27 @@ def gene_hpo_enrichment(body: GeneHpoEnrichmentInput):
         return svc.gene_list_hpo_enrichment(
             body.genes,
             min_count=body.min_count,
+            top_n=body.top_n,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/api/gene-prioritization")
+def gene_prioritization(body: GenePrioritizationInput):
+    if not 1 <= body.top_n <= 100:
+        raise HTTPException(400, "top_n must be between 1 and 100")
+    if not 0.0 <= body.ic_expansion_threshold <= 10.0:
+        raise HTTPException(400, "ic_expansion_threshold must be between 0 and 10")
+    try:
+        return svc.gene_prioritization_pipeline(
+            body.queries,
+            remove_modifiers=body.remove_modifiers,
+            replace_obsolete=body.replace_obsolete,
+            expand_ic=body.expand_ic,
+            ic_expansion_threshold=body.ic_expansion_threshold,
             top_n=body.top_n,
         )
     except ValueError as exc:

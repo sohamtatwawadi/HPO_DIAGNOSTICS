@@ -12,6 +12,7 @@ import DiseaseDeepDive from "./modules/DiseaseDeepDive";
 import HPOTermExplorer from "./modules/HPOTermExplorer";
 import ICProfiler from "./modules/ICProfiler";
 import ReportBuilder from "./modules/ReportBuilder";
+import GenePrioritizationPipeline from "./modules/GenePrioritizationPipeline";
 
 function HealthBanner() {
   const q = useHealth();
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="/term-explorer" element={<HPOTermExplorer />} />
               <Route path="/ic-profiler" element={<ICProfiler />} />
               <Route path="/report" element={<ReportBuilder />} />
+              <Route path="/gene-prioritization" element={<GenePrioritizationPipeline />} />
             </Routes>
           </main>
         </div>

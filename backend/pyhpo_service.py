@@ -702,6 +702,260 @@ def cohort_analysis(
     }
 
 
+# ── Gene prioritization pipeline (separate from run_enrichment / rank_by_similarity) ──
+_ANNOTATION_SPARSE_THRESHOLD = 25
+_HPOSET_SPARSE_THRESHOLD = 4
+_MEAN_IC_SPARSE_THRESHOLD = 1.5
+
+
+def _expand_with_ic_filter(
+    hposet: Any,
+    ic_threshold: float = 2.0,
+) -> tuple[Any, list[dict[str, Any]]]:
+    """
+    Expand each patient term to include ancestor terms with IC >= ic_threshold.
+    Returns the expanded HPOSet and a list of added term dicts for display.
+    """
+    from pyhpo import HPOSet
+
+    expanded: set = set(hposet)
+    added_terms: list[dict[str, Any]] = []
+    existing_ids = {int(t.id.replace("HP:", "")) for t in hposet}
+
+    for term in list(hposet):
+        for ancestor in term.all_parents:
+            ic = float(ancestor.information_content.omim)
+            idx = int(ancestor.id.replace("HP:", ""))
+            if ic >= ic_threshold and idx not in existing_ids:
+                expanded.add(ancestor)
+                existing_ids.add(idx)
+                added_terms.append(
+                    {
+                        "id": ancestor.id,
+                        "name": ancestor.name,
+                        "ic": round(ic, 3),
+                    }
+                )
+
+    added_terms.sort(key=lambda x: -x["ic"])
+    return HPOSet(list(expanded)), added_terms
+
+
+def _score_catalog(
+    hposet: Any,
+    catalog: Any,
+    top_n: int,
+    *,
+    kind: str = "omim",
+    method: str = "resnik",
+) -> list[dict[str, Any]]:
+    """
+    Score a full catalog (genes or diseases) against a patient HPOSet.
+    Returns top_n rows sorted by combined score.
+    """
+    from pyhpo import HPOSet, Ontology
+
+    patient_indices = {int(t.id.replace("HP:", "")) for t in hposet}
+    n_patient = len(hposet)
+    patient_ic_total = sum(float(t.information_content.omim) for t in hposet)
+    patient_by_idx = {int(t.id.replace("HP:", "")): t for t in hposet}
+
+    results: list[dict[str, Any]] = []
+    for entity in catalog:
+        entity_indices = entity.hpo
+        matched = patient_indices & entity_indices
+        if not matched:
+            continue
+
+        overlap = len(matched)
+        fwd_cov = overlap / n_patient
+        ic_sum = sum(
+            float(patient_by_idx[idx].information_content.omim) for idx in matched
+        )
+        ic_cov = ic_sum / patient_ic_total if patient_ic_total > 0 else 0.0
+        rev_cov = overlap / len(entity_indices) if entity_indices else 0.0
+
+        try:
+            entity_terms = [
+                Ontology.get_hpo_object(f"HP:{str(idx).zfill(7)}") for idx in entity_indices
+            ]
+            entity_hposet = HPOSet(entity_terms)
+            sim = _one_way_sim(hposet, entity_hposet, kind=kind, method=method)
+        except Exception:
+            sim = 0.0
+
+        combined = 0.45 * sim + 0.30 * ic_cov + 0.15 * fwd_cov + 0.10 * rev_cov
+
+        results.append(
+            {
+                "name": getattr(entity, "name", str(entity)),
+                "id": str(getattr(entity, "id", "")),
+                "combined_score": round(combined, 4),
+                "similarity": round(sim, 4),
+                "ic_weighted_coverage": round(ic_cov, 4),
+                "coverage": round(fwd_cov, 4),
+                "rev_coverage": round(rev_cov, 4),
+                "overlap": overlap,
+                "total_annotations": len(entity_indices),
+                "matched_terms": [
+                    {
+                        "id": patient_by_idx[idx].id,
+                        "name": patient_by_idx[idx].name,
+                        "ic": round(float(patient_by_idx[idx].information_content.omim), 3),
+                    }
+                    for idx in sorted(matched)
+                ],
+            }
+        )
+
+    results.sort(
+        key=lambda x: (
+            -x["combined_score"],
+            -x["ic_weighted_coverage"],
+            -x["coverage"],
+            -x["overlap"],
+        ),
+    )
+
+    for i, r in enumerate(results[:top_n]):
+        r["rank"] = i + 1
+
+    return results[:top_n]
+
+
+def _find_bridge_disease(
+    gene_name: str,
+    disease_results: list[dict[str, Any]],
+    omim_by_id: dict[str, Any],
+) -> dict[str, Any] | None:
+    """
+    For a gene, find the highest-ranked OMIM disease in disease_results that shares
+    at least one HPO annotation with the gene.
+    """
+    try:
+        from pyhpo.annotations import Gene as GeneAnnot
+
+        gene_obj = GeneAnnot.get(gene_name)
+        gene_hpo = gene_obj.hpo
+    except Exception:
+        return None
+
+    for dr in disease_results:
+        try:
+            dis = omim_by_id.get(str(dr["id"]))
+            if dis is None:
+                continue
+            if gene_hpo & dis.hpo:
+                return {
+                    "disease_name": dr["name"],
+                    "disease_id": dr["id"],
+                    "disease_rank": dr["rank"],
+                    "disease_score": dr["combined_score"],
+                }
+        except Exception:
+            continue
+    return None
+
+
+def gene_prioritization_pipeline(
+    queries: list[str],
+    *,
+    remove_modifiers: bool = False,
+    replace_obsolete: bool = True,
+    expand_ic: bool = True,
+    ic_expansion_threshold: float = 2.0,
+    top_n: int = 20,
+) -> dict[str, Any]:
+    """
+    Gene prioritization pipeline — separate from run_enrichment().
+
+    Pass 1: rank genes; Pass 2: rank OMIM diseases; combine with bridge disease per gene.
+    """
+    from pyhpo import Ontology
+
+    hposet, failed = build_hposet_from_queries(
+        queries,
+        remove_modifiers=remove_modifiers,
+        replace_obsolete=replace_obsolete,
+    )
+    if hposet is None or len(hposet) == 0:
+        raise ValueError("No valid HPO terms resolved")
+
+    expanded_terms: list[dict[str, Any]] = []
+    if expand_ic and len(hposet) > 0:
+        hposet, expanded_terms = _expand_with_ic_filter(hposet, ic_threshold=ic_expansion_threshold)
+
+    warnings: list[dict[str, Any]] = []
+    n_terms = len(hposet)
+    ic_vals = [float(t.information_content.omim) for t in hposet]
+    mean_ic = sum(ic_vals) / n_terms if n_terms else 0.0
+
+    if n_terms < _HPOSET_SPARSE_THRESHOLD:
+        warnings.append(
+            {
+                "type": "sparse_input",
+                "level": "warning",
+                "message": (
+                    f"Only {n_terms} HPO terms in profile. "
+                    "Fewer than 4 terms makes it very difficult to discriminate "
+                    "between genes. Add more specific phenotypes for better results."
+                ),
+            }
+        )
+
+    if mean_ic < _MEAN_IC_SPARSE_THRESHOLD:
+        warnings.append(
+            {
+                "type": "low_ic",
+                "level": "warning",
+                "message": (
+                    f"Mean IC of {mean_ic:.2f} is low — most entered terms are "
+                    "non-specific and appear in many diseases. "
+                    "Consider adding more specific phenotypes (e.g. subtype of seizure, "
+                    "specific metabolite abnormality, or pathognomonic finding)."
+                ),
+            }
+        )
+
+    if failed:
+        warnings.append(
+            {
+                "type": "unresolved_terms",
+                "level": "info",
+                "message": f"{len(failed)} term(s) could not be resolved: {', '.join(failed[:5])}",
+            }
+        )
+
+    gene_results = _score_catalog(hposet, Ontology.genes, top_n=top_n)
+    disease_results = _score_catalog(hposet, Ontology.omim_diseases, top_n=top_n)
+
+    omim_by_id = {str(d.id): d for d in Ontology.omim_diseases}
+
+    for gr in gene_results:
+        if gr["total_annotations"] < _ANNOTATION_SPARSE_THRESHOLD:
+            gr["annotation_warning"] = (
+                f"Gene has only {gr['total_annotations']} HPO annotations — "
+                "sparse coverage in database. Disease ranking below is more "
+                "reliable for this candidate."
+            )
+        else:
+            gr["annotation_warning"] = None
+
+        gr["bridge_disease"] = _find_bridge_disease(gr["name"], disease_results, omim_by_id)
+
+    return {
+        "genes": gene_results,
+        "diseases": disease_results,
+        "warnings": warnings,
+        "expanded_terms": expanded_terms,
+        "hposet_size": n_terms,
+        "mean_ic": round(mean_ic, 3),
+        "remove_modifiers_used": remove_modifiers,
+        "expand_ic_used": expand_ic,
+        "ic_expansion_threshold": ic_expansion_threshold,
+    }
+
+
 def warm_all_caches() -> None:
     ensure_ontology_loaded()
     for cat in ("omim", "gene", "orpha", "decipher"):

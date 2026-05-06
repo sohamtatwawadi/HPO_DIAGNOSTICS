@@ -137,3 +137,17 @@ export function useGeneHpoEnrichment() {
       post("/api/gene-hpo-enrichment", { genes, min_count, top_n }),
   });
 }
+
+export function useGenePrioritization() {
+  return useMutation({
+    mutationFn: (body) =>
+      post("/api/gene-prioritization", {
+        remove_modifiers: false,
+        replace_obsolete: true,
+        expand_ic: true,
+        ic_expansion_threshold: 2.0,
+        top_n: 20,
+        ...body,
+      }),
+  });
+}
