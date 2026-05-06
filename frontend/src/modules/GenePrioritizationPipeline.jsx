@@ -197,25 +197,47 @@ function DualRankingTable({ genes }) {
                   {(g.combined_score ?? 0).toFixed(2)}
                 </span>
               </div>
-              <span style={{ fontSize: 11, color: C.textSecondary }}>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: C.textSecondary,
+                  whiteSpace: "nowrap",
+                }}
+              >
                 {(g.coverage * 100).toFixed(0)}% ({g.overlap} terms)
               </span>
               <span
                 style={{
-                  fontSize: 11,
                   fontFamily: C.fontMono,
-                  color: g.ic_weighted_coverage > 0.5 ? C.green : C.textSecondary,
+                  fontSize: 12,
+                  color: C.textSecondary,
                 }}
               >
-                {(g.ic_weighted_coverage * 100).toFixed(0)}%
+                {(g.coverage * 100).toFixed(0)}%
               </span>
-              <span style={{ fontSize: 11, fontFamily: C.fontMono, color: C.textMuted }}>
+              <span
+                style={{
+                  fontFamily: C.fontMono,
+                  fontSize: 12,
+                  color: (g.ic_weighted_coverage ?? 0) >= 0.5 ? C.green : C.textMuted,
+                }}
+              >
+                {((g.ic_weighted_coverage ?? 0) * 100).toFixed(0)}%
+              </span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontFamily: C.fontMono,
+                  fontSize: 12,
+                  color: C.textMuted,
+                }}
+              >
                 {g.total_annotations}
-              </span>
-              <span style={{ fontSize: 11 }}>
                 {g.annotation_warning ? (
-                  <span title={g.annotation_warning} style={{ color: C.amber }}>
-                    ⚠ sparse
+                  <span title={g.annotation_warning} style={{ color: C.amber, fontSize: 11 }}>
+                    ⚠
                   </span>
                 ) : null}
               </span>
