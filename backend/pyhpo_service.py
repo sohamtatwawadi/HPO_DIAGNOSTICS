@@ -805,6 +805,7 @@ def _score_catalog(
                     }
                     for idx in sorted(matched)
                 ],
+                "_hpo_indices": entity_indices,
             }
         )
 
@@ -826,35 +827,70 @@ def _score_catalog(
 def _find_bridge_disease(
     gene_name: str,
     disease_results: list[dict[str, Any]],
-    omim_by_id: dict[str, Any],
+    min_causal_overlap: float = 0.15,
 ) -> dict[str, Any] | None:
     """
-    For a gene, find the highest-ranked OMIM disease in disease_results that shares
-    at least one HPO annotation with the gene.
+    Find the disease this gene most specifically causes that also matches
+    the patient's phenotype profile.
+
+    Algorithm:
+      1. For each disease in disease_results, compute causal_overlap:
+             causal_overlap = len(gene.hpo & disease.hpo) / len(disease.hpo)
+         This is "what fraction of the disease's phenotypes does this gene cover?"
+         A gene that causes a disease typically covers 50–100% of its HPO terms.
+
+      2. Keep diseases where causal_overlap >= min_causal_overlap (default 0.15).
+
+      3. Sort by causal_overlap DESC, then patient score DESC.
+         → Each gene gets its OWN most-specific disease, not just the top
+           patient-scoring disease (which would be the same for all genes
+           in a gene-panel disease like Noonan syndrome).
+
+    Why not sort by patient score first:
+      All Noonan genes have the same top patient-scoring disease (Noonan syndrome 8
+      or whichever Noonan subtype happens to score highest). Sorting by causal_overlap
+      first ensures RAF1 gets Noonan syndrome 5, PTPN11 gets Leopard syndrome 1, etc.
+
+    Searches within disease_results[:200] for speed. If disease_results was
+    generated with top_n < 200, searches the full list regardless.
     """
     try:
         from pyhpo.annotations import Gene as GeneAnnot
 
         gene_obj = GeneAnnot.get(gene_name)
-        gene_hpo = gene_obj.hpo
+        gene_hpo = gene_obj.hpo  # set of integer HPO indices
     except Exception:
         return None
 
-    for dr in disease_results:
-        try:
-            dis = omim_by_id.get(str(dr["id"]))
-            if dis is None:
-                continue
-            if gene_hpo & dis.hpo:
-                return {
+    search_pool = disease_results[:200] if len(disease_results) > 200 else disease_results
+
+    candidates = []
+    for dr in search_pool:
+        d_hpo = dr.get("_hpo_indices")
+        if not d_hpo:
+            continue
+        n_dis = len(d_hpo)
+        if n_dis == 0:
+            continue
+        causal = len(gene_hpo & d_hpo) / n_dis
+        if causal >= min_causal_overlap:
+            candidates.append(
+                {
                     "disease_name": dr["name"],
                     "disease_id": dr["id"],
                     "disease_rank": dr["rank"],
                     "disease_score": dr["combined_score"],
+                    "causal_overlap": round(causal, 3),
                 }
-        except Exception:
-            continue
-    return None
+            )
+
+    if not candidates:
+        return None
+
+    return sorted(
+        candidates,
+        key=lambda x: (-x["causal_overlap"], -x["disease_score"]),
+    )[0]
 
 
 def gene_prioritization_pipeline(
@@ -927,9 +963,13 @@ def gene_prioritization_pipeline(
         )
 
     gene_results = _score_catalog(hposet, Ontology.genes, top_n=top_n)
-    disease_results = _score_catalog(hposet, Ontology.omim_diseases, top_n=top_n)
-
-    omim_by_id = {str(d.id): d for d in Ontology.omim_diseases}
+    # Score up to 200 diseases so bridge resolution can use subtype-specific OMIM rows
+    # (e.g. rank #21) while the API still returns only top_n disease rows.
+    disease_results = _score_catalog(
+        hposet,
+        Ontology.omim_diseases,
+        top_n=min(200, max(top_n, 200)),
+    )
 
     for gr in gene_results:
         if gr["total_annotations"] < _ANNOTATION_SPARSE_THRESHOLD:
@@ -941,11 +981,14 @@ def gene_prioritization_pipeline(
         else:
             gr["annotation_warning"] = None
 
-        gr["bridge_disease"] = _find_bridge_disease(gr["name"], disease_results, omim_by_id)
+        gr["bridge_disease"] = _find_bridge_disease(gr["name"], disease_results)
+
+    def _clean(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
 
     return {
-        "genes": gene_results,
-        "diseases": disease_results,
+        "genes": _clean(gene_results),
+        "diseases": _clean(disease_results[:top_n]),
         "warnings": warnings,
         "expanded_terms": expanded_terms,
         "hposet_size": n_terms,
