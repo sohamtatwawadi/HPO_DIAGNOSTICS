@@ -4,7 +4,6 @@ import Card from "../components/Card";
 import Topbar from "../components/Topbar";
 import Textarea from "../components/Textarea";
 import CTA from "../components/CTA";
-import ScoreBar from "../components/ScoreBar";
 import MetricCard from "../components/MetricCard";
 import { useGenePrioritization } from "../hooks/useAPI";
 import { linesToQueries } from "../lib/utils";
@@ -89,6 +88,7 @@ function PipelineResults({ data }) {
 
 function DualRankingTable({ genes }) {
   const [expanded, setExpanded] = useState(null);
+  const maxScore = genes?.length ? Math.max(...genes.map((r) => r.combined_score ?? 0)) : 0;
 
   return (
     <Card>
@@ -164,7 +164,39 @@ function DualRankingTable({ genes }) {
                   {g.name}
                 </span>
               </div>
-              <ScoreBar pct={Math.min(100, Math.max(4, (g.combined_score ?? 0) * 20))} />
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <div
+                  style={{
+                    flex: 1,
+                    background: "rgba(37, 99, 235, 0.12)",
+                    borderRadius: 999,
+                    overflow: "hidden",
+                    height: 10,
+                    minWidth: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${maxScore > 0 ? Math.min(100, ((g.combined_score ?? 0) / maxScore) * 100) : 0}%`,
+                      height: "100%",
+                      background: C.accent,
+                      borderRadius: 999,
+                    }}
+                  />
+                </div>
+                <span
+                  style={{
+                    fontFamily: C.fontMono,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: C.text,
+                    minWidth: 36,
+                    textAlign: "right",
+                  }}
+                >
+                  {(g.combined_score ?? 0).toFixed(2)}
+                </span>
+              </div>
               <span style={{ fontSize: 11, color: C.textSecondary }}>
                 {(g.coverage * 100).toFixed(0)}% ({g.overlap} terms)
               </span>
