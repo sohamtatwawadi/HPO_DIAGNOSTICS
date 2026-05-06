@@ -3,6 +3,8 @@ HPO Diagnostics API — FastAPI + PyHPO 4.
 """
 from __future__ import annotations
 
+import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -293,17 +295,68 @@ def cohort(body: CohortInput):
 
 
 # Production (Docker/Railway): Dockerfile copies Vite dist to ./static next to main.py (/app/static).
-# Local optional: repo-root static/ for `cp -r frontend/dist ../static` from backend/.
+# Non-Docker: set FRONTEND_STATIC_DIR, or place dist at backend/static or repo frontend/dist.
 _backend_dir_for_static = Path(__file__).resolve().parent
-_static_candidates = (
+_repo_root_for_static = _backend_dir_for_static.parent
+_static_candidates: list[Path] = [
     _backend_dir_for_static / "static",
-    _backend_dir_for_static.parent / "static",
-)
+    _repo_root_for_static / "static",
+    _repo_root_for_static / "frontend" / "dist",
+]
+_env_static = os.environ.get("FRONTEND_STATIC_DIR", "").strip()
+if _env_static:
+    _static_candidates.insert(0, Path(_env_static).expanduser().resolve())
+
+_log = logging.getLogger("uvicorn.error")
 _static_dir = next(
     (p for p in _static_candidates if p.is_dir() and (p / "index.html").is_file()),
     None,
 )
 if _static_dir is not None:
+    from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="spa")
+    _static_resolved = _static_dir.resolve()
+
+    _log.info("Serving Vite SPA from %s", _static_resolved)
+
+    _assets_dir = _static_dir / "assets"
+    if _assets_dir.is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_assets_dir)),
+            name="vite_assets",
+        )
+
+    @app.get("/")
+    def spa_index():
+        return FileResponse(_static_dir / "index.html")
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str):
+        # Path traversal guard: only serve files inside dist/
+        candidate = (_static_dir / full_path).resolve()
+        try:
+            candidate.relative_to(_static_resolved)
+        except ValueError:
+            return FileResponse(_static_dir / "index.html")
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_static_dir / "index.html")
+
+else:
+    _log.warning(
+        "No frontend bundle found (index.html). Checked: %s. "
+        "Set FRONTEND_STATIC_DIR or deploy with the repo-root Dockerfile so /app/static exists. "
+        "API-only: use /api/health, /docs.",
+        ", ".join(str(p) for p in _static_candidates),
+    )
+
+    @app.get("/")
+    def root_no_spa():
+        return {
+            "service": "HPO Diagnostics API",
+            "detail": "Frontend static files not found on this server.",
+            "api_health": "/api/health",
+            "openapi_docs": "/docs",
+        }

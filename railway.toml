@@ -1,5 +1,8 @@
 # railway.toml
 # Place this in the repo root alongside the Dockerfile.
+#
+# Railway → Settings → Root Directory: leave EMPTY (repo root). If set to "backend",
+# the root Dockerfile is not used as intended and the frontend bundle may be missing.
 
 [build]
 builder = "DOCKERFILE"

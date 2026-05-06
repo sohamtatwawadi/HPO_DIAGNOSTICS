@@ -62,6 +62,9 @@ COPY backend/ ./
 # Copy built frontend into static/ so FastAPI serves it
 COPY --from=frontend /app/frontend/dist ./static/
 
+# Fail fast if the Vite build did not produce index.html (avoids silent API-only deploys)
+RUN test -f /app/static/index.html
+
 # Railway injects PORT at runtime; default to 8000 locally
 ENV PORT=8000
 EXPOSE 8000
