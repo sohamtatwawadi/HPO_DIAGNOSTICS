@@ -783,8 +783,12 @@ def _expand_with_ic_filter(
 def _all_gene_disease_expanded_hpo() -> dict[str, frozenset[int]]:
     """
     One pass over (genes × OMIM diseases): for each gene, union of its own HPO
-    indices plus disease.hpo for every disease where causal overlap >= 15%.
-    Cached for O(1) lookup per gene during scoring (avoids O(diseases) per gene).
+    indices plus disease.hpo for every disease where:
+      - causal_overlap >= 0.30 (gene covers ≥30% of disease HPO terms), and
+      - disease has >= 20 HPO annotations, unless causal_overlap == 1.0
+        (keeps sparse pairs like HEXA ↔ Tay-Sachs when both sets align fully).
+
+    Cached for O(1) lookup per gene during scoring.
     """
     from pyhpo import Ontology
 
@@ -800,6 +804,7 @@ def _all_gene_disease_expanded_hpo() -> dict[str, frozenset[int]]:
         if not d_hpo:
             continue
         nd = len(d_hpo)
+
         for gene in genes_list:
             gh = gene.hpo
             if not gh:
@@ -807,8 +812,20 @@ def _all_gene_disease_expanded_hpo() -> dict[str, frozenset[int]]:
             gn = getattr(gene, "name", None)
             if not gn:
                 continue
-            if len(gh & d_hpo) / nd >= 0.15:
-                acc[gn] |= d_hpo
+
+            shared = len(gh & d_hpo)
+            if shared == 0:
+                continue
+
+            causal = shared / nd
+
+            if causal < 0.30:
+                continue
+
+            if nd < 20 and causal < 1.0:
+                continue
+
+            acc[gn] |= d_hpo
 
     return {k: frozenset(v) for k, v in acc.items() if k}
 
@@ -919,7 +936,7 @@ def _score_catalog(
 def _find_bridge_disease(
     gene_name: str,
     disease_results: list[dict[str, Any]],
-    min_causal_overlap: float = 0.15,
+    min_causal_overlap: float = 0.30,
 ) -> dict[str, Any] | None:
     """
     Find the disease this gene most specifically causes that also matches
@@ -931,7 +948,7 @@ def _find_bridge_disease(
          This is "what fraction of the disease's phenotypes does this gene cover?"
          A gene that causes a disease typically covers 50–100% of its HPO terms.
 
-      2. Keep diseases where causal_overlap >= min_causal_overlap (default 0.15).
+      2. Keep diseases where causal_overlap >= min_causal_overlap (default 0.30).
 
       3. Sort by causal_overlap DESC, then patient score DESC.
          → Each gene gets its OWN most-specific disease, not just the top
