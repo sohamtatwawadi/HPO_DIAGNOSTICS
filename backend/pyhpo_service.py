@@ -122,6 +122,44 @@ def _one_way_sim(
     return total / n
 
 
+def _ic_weighted_one_way_sim(
+    patient_hposet,
+    entity_hposet,
+    kind: str = "omim",
+    method: str = "resnik",
+) -> float:
+    """
+    IC-weighted variant of _one_way_sim.
+
+    Like _one_way_sim but weights each patient term's best-match score by that
+    term's IC before averaging. A highly specific term (IC 7.2) drives the score
+    more than a vague term (IC 0.8).
+
+    Formula: sum(IC(pt) * max_sim(pt, entity)) / sum(IC(pt))
+    """
+    entity_terms = list(entity_hposet)
+    if not entity_terms:
+        return 0.0
+    patient_terms = list(patient_hposet)
+    if not patient_terms:
+        return 0.0
+
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for pt in patient_terms:
+        ic = float(pt.information_content.omim)
+        if ic <= 0:
+            ic = 0.1
+        best = max(
+            float(pt.similarity_score(et, kind=kind, method=method))
+            for et in entity_terms
+        )
+        weighted_sum += ic * best
+        total_weight += ic
+
+    return weighted_sum / total_weight if total_weight > 0 else 0.0
+
+
 def rank_by_similarity(
     patient_hposet,
     catalog,
@@ -741,6 +779,45 @@ def _expand_with_ic_filter(
     return HPOSet(list(expanded)), added_terms
 
 
+@lru_cache(maxsize=1)
+def _all_gene_disease_expanded_hpo() -> dict[str, frozenset[int]]:
+    """
+    One pass over (genes × OMIM diseases): for each gene, union of its own HPO
+    indices plus disease.hpo for every disease where causal overlap >= 15%.
+    Cached for O(1) lookup per gene during scoring (avoids O(diseases) per gene).
+    """
+    from pyhpo import Ontology
+
+    acc: dict[str, set[int]] = {}
+    genes_list = list(Ontology.genes)
+    for gene in genes_list:
+        nm = getattr(gene, "name", None)
+        if nm:
+            acc[nm] = set(gene.hpo)
+
+    for disease in Ontology.omim_diseases:
+        d_hpo = disease.hpo
+        if not d_hpo:
+            continue
+        nd = len(d_hpo)
+        for gene in genes_list:
+            gh = gene.hpo
+            if not gh:
+                continue
+            gn = getattr(gene, "name", None)
+            if not gn:
+                continue
+            if len(gh & d_hpo) / nd >= 0.15:
+                acc[gn] |= d_hpo
+
+    return {k: frozenset(v) for k, v in acc.items() if k}
+
+
+def _get_disease_expanded_hpo(gene_name: str) -> frozenset[int]:
+    """Union of gene HPO + causal OMIM disease HPO terms (see _all_gene_disease_expanded_hpo)."""
+    return _all_gene_disease_expanded_hpo().get(gene_name, frozenset())
+
+
 def _score_catalog(
     hposet: Any,
     catalog: Any,
@@ -748,6 +825,7 @@ def _score_catalog(
     *,
     kind: str = "omim",
     method: str = "resnik",
+    use_disease_expansion: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Score a full catalog (genes or diseases) against a patient HPOSet.
@@ -762,8 +840,17 @@ def _score_catalog(
 
     results: list[dict[str, Any]] = []
     for entity in catalog:
-        entity_indices = entity.hpo
-        matched = patient_indices & entity_indices
+        gene_name = getattr(entity, "name", None)
+
+        if use_disease_expansion and gene_name:
+            entity_indices_raw = entity.hpo
+            entity_indices_expanded = _get_disease_expanded_hpo(gene_name)
+            entity_indices_for_match = entity_indices_expanded
+        else:
+            entity_indices_raw = entity.hpo
+            entity_indices_for_match = entity_indices_raw
+
+        matched = patient_indices & entity_indices_for_match
         if not matched:
             continue
 
@@ -773,14 +860,16 @@ def _score_catalog(
             float(patient_by_idx[idx].information_content.omim) for idx in matched
         )
         ic_cov = ic_sum / patient_ic_total if patient_ic_total > 0 else 0.0
-        rev_cov = overlap / len(entity_indices) if entity_indices else 0.0
+        n_raw = len(entity_indices_raw) if entity_indices_raw else 1
+        rev_cov = overlap / n_raw
 
         try:
             entity_terms = [
-                Ontology.get_hpo_object(f"HP:{str(idx).zfill(7)}") for idx in entity_indices
+                Ontology.get_hpo_object(f"HP:{str(idx).zfill(7)}")
+                for idx in entity_indices_for_match
             ]
             entity_hposet = HPOSet(entity_terms)
-            sim = _one_way_sim(hposet, entity_hposet, kind=kind, method=method)
+            sim = _ic_weighted_one_way_sim(hposet, entity_hposet, kind=kind, method=method)
         except Exception:
             sim = 0.0
 
@@ -796,7 +885,10 @@ def _score_catalog(
                 "coverage": round(fwd_cov, 4),
                 "rev_coverage": round(rev_cov, 4),
                 "overlap": overlap,
-                "total_annotations": len(entity_indices),
+                "total_annotations": len(entity_indices_raw),
+                "expanded_annotations": (
+                    len(entity_indices_for_match) if use_disease_expansion else None
+                ),
                 "matched_terms": [
                     {
                         "id": patient_by_idx[idx].id,
@@ -805,7 +897,7 @@ def _score_catalog(
                     }
                     for idx in sorted(matched)
                 ],
-                "_hpo_indices": entity_indices,
+                "_hpo_indices": entity_indices_raw,
             }
         )
 
@@ -962,7 +1054,12 @@ def gene_prioritization_pipeline(
             }
         )
 
-    gene_results = _score_catalog(hposet, Ontology.genes, top_n=top_n)
+    gene_results = _score_catalog(
+        hposet,
+        Ontology.genes,
+        top_n=top_n,
+        use_disease_expansion=True,
+    )
     # Score up to 200 diseases so bridge resolution can use subtype-specific OMIM rows
     # (e.g. rank #21) while the API still returns only top_n disease rows.
     disease_results = _score_catalog(
@@ -972,12 +1069,21 @@ def gene_prioritization_pipeline(
     )
 
     for gr in gene_results:
-        if gr["total_annotations"] < _ANNOTATION_SPARSE_THRESHOLD:
-            gr["annotation_warning"] = (
-                f"Gene has only {gr['total_annotations']} HPO annotations — "
-                "sparse coverage in database. Disease ranking below is more "
-                "reliable for this candidate."
-            )
+        raw_annot = gr["total_annotations"]
+        exp_annot = gr.get("expanded_annotations")
+        if raw_annot < _ANNOTATION_SPARSE_THRESHOLD:
+            if exp_annot and exp_annot > raw_annot:
+                gr["annotation_warning"] = (
+                    f"Gene has only {raw_annot} direct HPO annotations. "
+                    f"Score boosted using {exp_annot} terms from associated diseases. "
+                    "Disease ranking is also shown for verification."
+                )
+            else:
+                gr["annotation_warning"] = (
+                    f"Gene has only {raw_annot} HPO annotations — "
+                    "sparse coverage in database. Disease ranking below is more "
+                    "reliable for this candidate."
+                )
         else:
             gr["annotation_warning"] = None
 
@@ -999,9 +1105,18 @@ def gene_prioritization_pipeline(
     }
 
 
+def _prime_disease_expansion_cache() -> None:
+    """Pre-build the gene↔disease HPO expansion index (one O(genes×diseases) pass)."""
+    try:
+        _all_gene_disease_expanded_hpo()
+    except Exception:
+        pass
+
+
 def warm_all_caches() -> None:
     ensure_ontology_loaded()
     for cat in ("omim", "gene", "orpha", "decipher"):
         get_enrichment_model(cat)
     get_hpo_enrichment("gene")
     get_hpo_enrichment("omim")
+    _prime_disease_expansion_cache()
