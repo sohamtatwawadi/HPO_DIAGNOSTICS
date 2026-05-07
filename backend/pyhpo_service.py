@@ -1105,18 +1105,12 @@ def gene_prioritization_pipeline(
     }
 
 
-def _prime_disease_expansion_cache() -> None:
-    """Pre-build the gene↔disease HPO expansion index (one O(genes×diseases) pass)."""
-    try:
-        _all_gene_disease_expanded_hpo()
-    except Exception:
-        pass
-
-
 def warm_all_caches() -> None:
     ensure_ontology_loaded()
     for cat in ("omim", "gene", "orpha", "decipher"):
         get_enrichment_model(cat)
     get_hpo_enrichment("gene")
     get_hpo_enrichment("omim")
-    _prime_disease_expansion_cache()
+    # Do not call _all_gene_disease_expanded_hpo() here — it is O(genes×diseases) and
+    # blocks FastAPI lifespan, so Railway's /api/health check times out during deploy.
+    # The index is built lazily on first gene-prioritization request (same @lru_cache).
