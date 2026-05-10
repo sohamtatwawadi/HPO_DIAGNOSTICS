@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { C } from "../tokens";
 import Card from "../components/Card";
 import Topbar from "../components/Topbar";
@@ -13,9 +13,177 @@ const amberSoft = "rgba(217, 119, 6, 0.1)";
 const accentSoft = "rgba(37, 99, 235, 0.08)";
 const blueSoft = "rgba(37, 99, 235, 0.12)";
 const blueBorder = "#BFDBFE";
+const greenSoft = "rgba(22, 163, 74, 0.1)";
+
+function GeneSearchCard({ gene, patientTermCount, C: tokens }) {
+  const bd = gene.bridge_disease;
+  const unmatchedCount = gene.total_annotations - gene.overlap;
+
+  const rankColor =
+    gene.rank <= 5 ? tokens.green : gene.rank <= 20 ? tokens.accent : gene.rank <= 100 ? tokens.amber : tokens.red;
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        background: surfaceAlt,
+        border: `0.5px solid ${tokens.borderEmphasis}`,
+        borderRadius: 8,
+        padding: "14px 16px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ fontFamily: tokens.fontMono, fontWeight: 600, fontSize: 16, color: tokens.text }}>
+          {gene.name}
+        </span>
+        <span style={{ fontFamily: tokens.fontMono, fontWeight: 600, fontSize: 14, color: rankColor }}>
+          Rank #{gene.rank}
+        </span>
+        {gene.annotation_warning && (
+          <span
+            style={{
+              fontSize: 11,
+              color: tokens.amber,
+              background: amberSoft,
+              padding: "2px 8px",
+              borderRadius: 999,
+            }}
+          >
+            ⚠ Sparse annotations
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 12 }}>
+        {[
+          { label: "Score", value: gene.combined_score != null ? gene.combined_score.toFixed(3) : "—" },
+          {
+            label: "IC Cov",
+            value: `${((gene.ic_weighted_coverage ?? 0) * 100).toFixed(0)}%`,
+          },
+          {
+            label: "Coverage",
+            value: `${((gene.coverage ?? 0) * 100).toFixed(0)}% (${gene.overlap}/${patientTermCount} terms)`,
+          },
+          { label: "Overlap", value: gene.overlap },
+          { label: "Annot", value: gene.total_annotations },
+        ].map(({ label, value }) => (
+          <div key={label}>
+            <div
+              style={{
+                fontSize: 10,
+                color: tokens.textMuted,
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                marginBottom: 2,
+              }}
+            >
+              {label}
+            </div>
+            <div style={{ fontFamily: tokens.fontMono, fontSize: 13, fontWeight: 500, color: tokens.text }}>
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {bd && (
+        <div style={{ marginBottom: 10, fontSize: 12 }}>
+          <span style={{ color: tokens.textMuted }}>Bridge disease: </span>
+          <span style={{ color: tokens.accent, fontWeight: 500 }}>{bd.disease_name}</span>
+          <span style={{ color: tokens.textMuted }}>
+            {" "}
+            · Gene #{bd.gene_rank ?? gene.rank} · Dis #{bd.disease_rank}
+          </span>
+        </div>
+      )}
+
+      <div style={{ marginBottom: 6 }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: tokens.textMuted,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+            marginBottom: 6,
+          }}
+        >
+          Matched patient terms ({gene.matched_terms?.length || 0})
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {(gene.matched_terms || []).map((t) => (
+            <span
+              key={t.id}
+              style={{
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background: greenSoft,
+                color: "#15803D",
+                fontFamily: tokens.fontMono,
+              }}
+            >
+              {t.id} · {t.name} · IC {t.ic != null ? t.ic.toFixed(2) : "—"}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {unmatchedCount > 0 && (
+        <div style={{ fontSize: 11, color: tokens.textMuted, marginTop: 4 }}>
+          + {unmatchedCount} gene annotations not in patient profile
+        </div>
+      )}
+
+      {gene.annotation_warning && (
+        <div
+          style={{
+            marginTop: 10,
+            fontSize: 11,
+            color: tokens.amber,
+            background: amberSoft,
+            padding: "6px 10px",
+            borderRadius: 6,
+          }}
+        >
+          {gene.annotation_warning}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PipelineResults({ data }) {
+  const [allGenes, setAllGenes] = useState([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResult, setSearchResult] = useState(null);
+  const [searchNotFound, setSearchNotFound] = useState(false);
   const lowIc = (data.mean_ic ?? 0) < 1.5;
+
+  useEffect(() => {
+    setAllGenes(data.all_genes ?? []);
+    setSearchQuery("");
+    setSearchResult(null);
+    setSearchNotFound(false);
+  }, [data]);
+
+  const handleGeneSearch = (query) => {
+    const q = query.trim().toUpperCase();
+    setSearchQuery(query);
+    if (!q) {
+      setSearchResult(null);
+      setSearchNotFound(false);
+      return;
+    }
+    const found = allGenes.find((g) => g.name.toUpperCase() === q);
+    if (found) {
+      setSearchResult(found);
+      setSearchNotFound(false);
+    } else {
+      setSearchResult(null);
+      setSearchNotFound(q.length >= 2);
+    }
+  };
 
   return (
     <div>
@@ -79,6 +247,91 @@ function PipelineResults({ data }) {
         </Card>
         <MetricCard label="Expanded terms" value={data.expanded_terms?.length ?? 0} />
         <MetricCard label="Remove modifiers" value={data.remove_modifiers_used ? "On" : "Off"} />
+      </div>
+
+      <div
+        style={{
+          background: C.card,
+          border: `0.5px solid ${C.border}`,
+          borderRadius: 10,
+          padding: "14px 16px",
+          marginBottom: 16,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 10,
+            flexWrap: "wrap",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 12,
+              color: C.textMuted,
+              fontWeight: 500,
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+            }}
+          >
+            Gene Search
+          </span>
+          <span style={{ fontSize: 11, color: C.textMuted }}>
+            {(data.total_genes_scored ?? allGenes.length).toLocaleString()} genes scored · showing top{" "}
+            {data.genes?.length ?? 0}
+          </span>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="text"
+            placeholder="Search any gene (e.g. CFTR, HEXA, SCN5A)..."
+            value={searchQuery}
+            onChange={(e) => handleGeneSearch(e.target.value)}
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              border: `1px solid ${C.borderEmphasis}`,
+              borderRadius: 6,
+              fontSize: 13,
+              fontFamily: C.fontMono,
+              color: C.text,
+              background: surfaceAlt,
+              outline: "none",
+            }}
+          />
+          {searchQuery ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchQuery("");
+                setSearchResult(null);
+                setSearchNotFound(false);
+              }}
+              style={{
+                fontSize: 12,
+                color: C.textMuted,
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "4px 8px",
+              }}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+
+        {searchNotFound && !searchResult ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: C.textMuted, fontStyle: "italic" }}>
+            {`"${searchQuery}" was not scored — it may have zero overlap with the patient's HPO terms.`}
+          </div>
+        ) : null}
+
+        {searchResult ? <GeneSearchCard gene={searchResult} patientTermCount={data.hposet_size} C={C} /> : null}
       </div>
 
       <DualRankingTable genes={data.genes} />
@@ -386,7 +639,7 @@ export default function GenePrioritizationPipeline() {
               <input
                 type="range"
                 min={5}
-                max={100}
+                max={5000}
                 step={5}
                 value={topN}
                 onChange={(e) => setTopN(+e.target.value)}

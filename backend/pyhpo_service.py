@@ -789,7 +789,8 @@ def _score_catalog(
 ) -> list[dict[str, Any]]:
     """
     Score a full catalog (genes or diseases) against a patient HPOSet.
-    Returns top_n rows sorted by combined score.
+    Returns every scored entity, sorted by combined score, with ``rank`` set on each row.
+    ``top_n`` is ignored for slicing; callers slice with ``[:top_n]`` when needed.
     """
     from pyhpo import HPOSet, Ontology
 
@@ -856,10 +857,10 @@ def _score_catalog(
         ),
     )
 
-    for i, r in enumerate(results[:top_n]):
+    for i, r in enumerate(results):
         r["rank"] = i + 1
 
-    return results[:top_n]
+    return results
 
 
 def _find_bridge_disease(
@@ -1000,16 +1001,16 @@ def gene_prioritization_pipeline(
             }
         )
 
-    gene_results = _score_catalog(hposet, Ontology.genes, top_n=top_n)
-    # Score up to 200 diseases so bridge resolution can use subtype-specific OMIM rows
-    # (e.g. rank #21) while the API still returns only top_n disease rows.
-    disease_results = _score_catalog(
+    gene_results_full = _score_catalog(hposet, Ontology.genes, top_n=top_n)
+    gene_results = gene_results_full[:top_n]
+    # Score all diseases; bridge resolution uses the top ~200 by patient score.
+    disease_results_full = _score_catalog(
         hposet,
         Ontology.omim_diseases,
         top_n=min(200, max(top_n, 200)),
     )
 
-    for gr in gene_results:
+    for gr in gene_results_full:
         if gr["total_annotations"] < _ANNOTATION_SPARSE_THRESHOLD:
             gr["annotation_warning"] = (
                 f"Gene has only {gr['total_annotations']} HPO annotations — "
@@ -1019,14 +1020,16 @@ def gene_prioritization_pipeline(
         else:
             gr["annotation_warning"] = None
 
-        gr["bridge_disease"] = _find_bridge_disease(gr["name"], disease_results)
+        gr["bridge_disease"] = _find_bridge_disease(gr["name"], disease_results_full)
 
     def _clean(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
 
     return {
         "genes": _clean(gene_results),
-        "diseases": _clean(disease_results[:top_n]),
+        "all_genes": _clean(gene_results_full),
+        "total_genes_scored": len(gene_results_full),
+        "diseases": _clean(disease_results_full[:top_n]),
         "warnings": warnings,
         "expanded_terms": expanded_terms,
         "hposet_size": n_terms,
