@@ -278,7 +278,7 @@ function PipelineResults({
             Search any gene
           </span>
           <span style={{ fontSize: 11, color: C.textMuted }}>
-            {(results?.all_genes?.length ?? allGenes.length).toLocaleString()} genes scored · showing top{" "}
+            top {(results?.all_genes?.length ?? allGenes.length).toLocaleString()} genes · showing{" "}
             {results?.genes?.length ?? 20}
           </span>
         </div>
@@ -666,7 +666,7 @@ export default function GenePrioritizationPipeline() {
               <input
                 type="range"
                 min={5}
-                max={5000}
+                max={1000}
                 step={5}
                 value={topN}
                 onChange={(e) => setTopN(+e.target.value)}

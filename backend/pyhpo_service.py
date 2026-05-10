@@ -1001,7 +1001,15 @@ def gene_prioritization_pipeline(
             }
         )
 
-    gene_results_full = _score_catalog(hposet, Ontology.genes, top_n=top_n)
+    # Score all genes with ≥1 overlap but cap the returned full list at 1000.
+    # Ranks beyond that are incidental weak matches; payload stays ~<200KB.
+    _SEARCH_CAP = 1000
+    gene_results_scored = _score_catalog(
+        hposet,
+        Ontology.genes,
+        top_n=_SEARCH_CAP,
+    )
+    gene_results_full = gene_results_scored[:_SEARCH_CAP]
     gene_results = gene_results_full[:top_n]
     # Score all diseases; bridge resolution uses the top ~200 by patient score.
     disease_results_full = _score_catalog(

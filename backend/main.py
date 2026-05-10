@@ -155,8 +155,8 @@ def gene_hpo_enrichment(body: GeneHpoEnrichmentInput):
 
 @app.post("/api/gene-prioritization")
 def gene_prioritization(body: GenePrioritizationInput):
-    if not 1 <= body.top_n <= 5000:
-        raise HTTPException(400, "top_n must be between 1 and 5000")
+    if not 1 <= body.top_n <= 1000:
+        raise HTTPException(400, "top_n must be between 1 and 1000")
     if not 0.0 <= body.ic_expansion_threshold <= 10.0:
         raise HTTPException(400, "ic_expansion_threshold must be between 0 and 10")
     try:
