@@ -459,14 +459,16 @@ export default function VariantFilePrioritization() {
                   fontSize: 12,
                 }}
               >
-                <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>VariMAT file (.txt / .tsv, up to 500MB)</div>
+                <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>
+                  VariMAT file (.txt / .tsv / .gz, up to 500MB)
+                </div>
                 <div style={{ color: C.textMuted, wordBreak: "break-all", overflowWrap: "anywhere" }}>
                   {fileName || "Click to choose a file…"}
                 </div>
                 <input
                   ref={fileRef}
                   type="file"
-                  accept=".txt,.tsv,text/tab-separated-values,text/plain"
+                  accept=".txt,.tsv,.gz,text/tab-separated-values,text/plain,application/gzip"
                   onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")}
                   style={{ display: "none" }}
                 />

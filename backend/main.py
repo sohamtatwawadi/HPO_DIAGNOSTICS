@@ -3,6 +3,8 @@ HPO Diagnostics API — FastAPI + PyHPO 4.
 """
 from __future__ import annotations
 
+import gzip
+import io
 import logging
 import os
 import sys
@@ -27,6 +29,42 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 _MAX_VARIMAT_BYTES = 500 * 1024 * 1024  # 500MB — whole-exome/genome VariMAT exports (~20k genes) are the expected case
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _decode_varimat_upload(raw: bytes) -> str:
+    """
+    Decode an uploaded VariMAT file to text, transparently handling gzip.
+
+    Detected by magic bytes (not filename), so it works regardless of what
+    the browser named the upload. Decompression is bounded by the same
+    _MAX_VARIMAT_BYTES ceiling as a plain upload, read incrementally rather
+    than all at once, so a small malicious/corrupt .gz can't be used as a
+    decompression bomb to exhaust server memory.
+    """
+    if raw[:2] == _GZIP_MAGIC:
+        chunks = []
+        total = 0
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
+                while True:
+                    chunk = gz.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_VARIMAT_BYTES:
+                        raise HTTPException(
+                            400, f"Decompressed file too large (max {_MAX_VARIMAT_BYTES // (1024 * 1024)}MB)"
+                        )
+                    chunks.append(chunk)
+        except gzip.BadGzipFile as exc:
+            raise HTTPException(400, "Could not decompress .gz file — is it a valid gzip archive?") from exc
+        raw = b"".join(chunks)
+
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, "File must be UTF-8 text (plain or gzip-compressed)") from exc
 
 
 @asynccontextmanager
@@ -203,10 +241,7 @@ async def variant_prioritize_file(
     raw = await file.read()
     if len(raw) > _MAX_VARIMAT_BYTES:
         raise HTTPException(400, f"File too large (max {_MAX_VARIMAT_BYTES // (1024 * 1024)}MB)")
-    try:
-        content = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(400, "File must be UTF-8 text") from exc
+    content = _decode_varimat_upload(raw)
     del raw  # free the raw-bytes copy before parsing holds the decoded string + row data
 
     queries = [q.strip() for q in hpo_terms.replace(",", "\n").split("\n") if q.strip()]
