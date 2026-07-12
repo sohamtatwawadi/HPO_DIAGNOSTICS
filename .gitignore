@@ -46,3 +46,6 @@ frontend/node_modules/
 
 # Optional local duplicate checkout (keep untracked)
 HPO_DIAGNOSTICS/
+
+# Saved-case SQLite store (local user data, not repo content)
+backend/data/

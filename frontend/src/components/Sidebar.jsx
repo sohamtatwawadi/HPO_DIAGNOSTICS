@@ -25,7 +25,11 @@ const NAV = [
   ["/report", "Report builder"],
 ];
 
-const NAV_NEW = [["/gene-prioritization", "★ Gene prioritization", "new"]];
+const NAV_NEW = [
+  ["/gene-prioritization", "★ Gene prioritization", "new"],
+  ["/variant-file-prioritization", "★ Variant file prioritization", "new"],
+  ["/saved-cases", "★ Saved cases", "new"],
+];
 
 export default function Sidebar() {
   return (

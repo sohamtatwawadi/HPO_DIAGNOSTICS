@@ -7,6 +7,7 @@ import CTA from "../components/CTA";
 import MetricCard from "../components/MetricCard";
 import { useGenePrioritization } from "../hooks/useAPI";
 import { linesToQueries } from "../lib/utils";
+import SaveCaseButton from "../components/SaveCaseButton";
 
 const surfaceAlt = "#F8FAFC";
 const amberSoft = "rgba(217, 119, 6, 0.1)";
@@ -762,20 +763,35 @@ export default function GenePrioritizationPipeline() {
       )}
 
       {mut.isSuccess && mut.data && (
-        <PipelineResults
-          data={mut.data}
-          results={mut.data}
-          allGenes={allGenes}
-          searchQuery={searchQuery}
-          onGeneSearch={handleGeneSearch}
-          searchNotFound={searchNotFound}
-          searchResult={searchResult}
-          onClearGeneSearch={() => {
-            setSearchQuery("");
-            setSearchResult(null);
-            setSearchNotFound(false);
-          }}
-        />
+        <>
+          <div style={{ marginBottom: 14 }}>
+            <SaveCaseButton
+              kind="gene-prioritization"
+              params={{
+                queries: linesToQueries(terms),
+                remove_modifiers: removeModif,
+                expand_ic: expandIC,
+                ic_expansion_threshold: icThreshold,
+                top_n: topN,
+              }}
+              result={mut.data}
+            />
+          </div>
+          <PipelineResults
+            data={mut.data}
+            results={mut.data}
+            allGenes={allGenes}
+            searchQuery={searchQuery}
+            onGeneSearch={handleGeneSearch}
+            searchNotFound={searchNotFound}
+            searchResult={searchResult}
+            onClearGeneSearch={() => {
+              setSearchQuery("");
+              setSearchResult(null);
+              setSearchNotFound(false);
+            }}
+          />
+        </>
       )}
     </div>
   );

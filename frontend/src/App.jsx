@@ -13,6 +13,8 @@ import HPOTermExplorer from "./modules/HPOTermExplorer";
 import ICProfiler from "./modules/ICProfiler";
 import ReportBuilder from "./modules/ReportBuilder";
 import GenePrioritizationPipeline from "./modules/GenePrioritizationPipeline";
+import VariantFilePrioritization from "./modules/VariantFilePrioritization";
+import SavedCases from "./modules/SavedCases";
 
 function HealthBanner() {
   const q = useHealth();
@@ -61,6 +63,8 @@ export default function App() {
               <Route path="/ic-profiler" element={<ICProfiler />} />
               <Route path="/report" element={<ReportBuilder />} />
               <Route path="/gene-prioritization" element={<GenePrioritizationPipeline />} />
+              <Route path="/variant-file-prioritization" element={<VariantFilePrioritization />} />
+              <Route path="/saved-cases" element={<SavedCases />} />
             </Routes>
           </main>
         </div>

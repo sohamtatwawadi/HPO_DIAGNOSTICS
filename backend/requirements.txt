@@ -4,3 +4,4 @@ pydantic>=2.0.0
 pyhpo>=4.0.0
 scipy>=1.9.0
 pandas>=2.0.0
+python-multipart>=0.0.9

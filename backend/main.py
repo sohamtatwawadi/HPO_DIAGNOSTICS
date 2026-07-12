@@ -8,6 +8,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 # Support both: `cd backend && uvicorn main:app` and `uvicorn backend.main:app` from repo root.
 _backend_dir = Path(__file__).resolve().parent
@@ -19,10 +20,13 @@ if _local_pyhpo_pkg.is_file() and str(_repo_root) not in sys.path:
 if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
+import cases_store
 import pyhpo_service as svc
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+_MAX_VARIMAT_BYTES = 500 * 1024 * 1024  # 500MB — whole-exome/genome VariMAT exports (~20k genes) are the expected case
 
 
 @asynccontextmanager
@@ -174,6 +178,80 @@ def gene_prioritization(body: GenePrioritizationInput):
         raise HTTPException(500, str(exc)) from exc
 
 
+@app.post("/api/variant-prioritize-file")
+async def variant_prioritize_file(
+    hpo_terms: str = Form(...),
+    file: UploadFile = File(...),
+    remove_modifiers: bool = Form(False),
+    replace_obsolete: bool = Form(True),
+    expand_ic: bool = Form(True),
+    ic_expansion_threshold: float = Form(2.0),
+    top_n: int = Form(100),
+):
+    """
+    Submit a VariMAT upload for background processing. Returns a job_id
+    immediately (validation/decoding only, no scoring) -- poll
+    GET /api/variant-prioritize-file/status/{job_id} for the result. A
+    whole-exome/genome file can take several seconds to score, which is too
+    long to trust a single synchronous request against gateway timeouts.
+    """
+    if not 1 <= top_n <= 1000:
+        raise HTTPException(400, "top_n must be between 1 and 1000")
+    if not 0.0 <= ic_expansion_threshold <= 10.0:
+        raise HTTPException(400, "ic_expansion_threshold must be between 0 and 10")
+
+    raw = await file.read()
+    if len(raw) > _MAX_VARIMAT_BYTES:
+        raise HTTPException(400, f"File too large (max {_MAX_VARIMAT_BYTES // (1024 * 1024)}MB)")
+    try:
+        content = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, "File must be UTF-8 text") from exc
+    del raw  # free the raw-bytes copy before parsing holds the decoded string + row data
+
+    queries = [q.strip() for q in hpo_terms.replace(",", "\n").split("\n") if q.strip()]
+    if not queries:
+        raise HTTPException(400, "No HPO terms provided")
+
+    job_id = svc.submit_variant_prioritization_job(
+        queries,
+        content,
+        remove_modifiers=remove_modifiers,
+        replace_obsolete=replace_obsolete,
+        expand_ic=expand_ic,
+        ic_expansion_threshold=ic_expansion_threshold,
+        top_n=top_n,
+    )
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/variant-prioritize-file/status/{job_id}")
+def variant_prioritize_file_status(job_id: str):
+    try:
+        return svc.get_variant_prioritization_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class VariantFileGeneDetailInput(BaseModel):
+    token: str
+    genes: list[str]
+
+
+@app.post("/api/variant-prioritize-file/gene-detail")
+def variant_prioritize_file_gene_detail(body: VariantFileGeneDetailInput):
+    if not body.genes:
+        raise HTTPException(400, "No genes provided")
+    if len(body.genes) > 200:
+        raise HTTPException(400, "At most 200 genes per lookup")
+    try:
+        return svc.variant_file_gene_detail(body.token, body.genes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+
 @app.post("/api/enrichment")
 def run_enrichment(body: EnrichmentInput):
     if body.source not in {"omim", "gene", "orpha", "decipher"}:
@@ -292,6 +370,54 @@ def cohort(body: CohortInput):
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, str(exc)) from exc
+
+
+class SaveCaseInput(BaseModel):
+    name: str
+    kind: str
+    params: dict
+    result: dict
+    notes: str = ""
+
+
+@app.post("/api/cases")
+def save_case(body: SaveCaseInput):
+    if not body.name.strip():
+        raise HTTPException(400, "Case name is required")
+    try:
+        case_id = cases_store.save_case(body.name.strip(), body.kind, body.params, body.result, body.notes)
+        return {"id": case_id}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.get("/api/cases")
+def list_cases(kind: Optional[str] = None):
+    try:
+        return {"cases": cases_store.list_cases(kind=kind)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.get("/api/cases/{case_id}")
+def get_case(case_id: str):
+    try:
+        return cases_store.get_case(case_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.delete("/api/cases/{case_id}")
+def delete_case(case_id: str):
+    try:
+        deleted = cases_store.delete_case(case_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+    if not deleted:
+        raise HTTPException(404, f"No case found for id {case_id!r}")
+    return {"deleted": True}
 
 
 # Production (Docker/Railway): Dockerfile copies Vite dist to ./static next to main.py (/app/static).

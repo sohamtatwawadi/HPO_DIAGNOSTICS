@@ -3,6 +3,7 @@ PyHPO service layer — ontology + enrichment models cached per process.
 """
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
@@ -84,6 +85,28 @@ def build_hposet_from_queries(
     return hposet, failed
 
 
+# Process-lifetime memoization for pairwise term similarity. Ontology terms are
+# loaded once at startup and never mutated, so (term_index, term_index, kind,
+# method) -> score is stable for the life of the process. Scoring a large
+# catalog (thousands of genes/diseases) against a small, fixed patient term
+# set produces massive repetition here -- many entities share overlapping HPO
+# annotations, so the number of *unique* pairs is far smaller than the number
+# of calls. Plain dict, not lru_cache: unbounded growth is fine here (each
+# entry is a few dozen bytes; even a million entries is tens of MB) and we
+# want cross-request reuse, which lru_cache's default eviction would fight.
+_pair_sim_cache: dict[tuple[int, int, str, str], float] = {}
+
+
+def _cached_pair_similarity(term1, term2, kind: str, method: str) -> float:
+    key = (int(term1), int(term2), kind, method)
+    cached = _pair_sim_cache.get(key)
+    if cached is not None:
+        return cached
+    score = float(term1.similarity_score(term2, kind=kind, method=method))
+    _pair_sim_cache[key] = score
+    return score
+
+
 def _one_way_sim(
     patient_hposet,
     entity_hposet,
@@ -114,10 +137,7 @@ def _one_way_sim(
         return 0.0
     total = 0.0
     for pt in patient_hposet:
-        best = max(
-            float(pt.similarity_score(et, kind=kind, method=method))
-            for et in entity_terms
-        )
+        best = max(_cached_pair_similarity(pt, et, kind, method) for et in entity_terms)
         total += best
     return total / n
 
@@ -150,10 +170,7 @@ def _ic_weighted_one_way_sim(
         ic = float(pt.information_content.omim)
         if ic <= 0:
             ic = 0.1
-        best = max(
-            float(pt.similarity_score(et, kind=kind, method=method))
-            for et in entity_terms
-        )
+        best = max(_cached_pair_similarity(pt, et, kind, method) for et in entity_terms)
         weighted_sum += ic * best
         total_weight += ic
 
@@ -221,10 +238,7 @@ def rank_by_similarity(
         try:
             from pyhpo import Ontology
 
-            entity_terms = [
-                Ontology.get_hpo_object(f"HP:{str(idx).zfill(7)}")
-                for idx in entity_hpo_indices
-            ]
+            entity_terms = [Ontology[idx] for idx in entity_hpo_indices]
             entity_hposet = HPOSet(entity_terms)
         except Exception:
             continue
@@ -815,9 +829,7 @@ def _score_catalog(
         rev_cov = overlap / len(entity_indices) if entity_indices else 0.0
 
         try:
-            entity_terms = [
-                Ontology.get_hpo_object(f"HP:{str(idx).zfill(7)}") for idx in entity_indices
-            ]
+            entity_terms = [Ontology[idx] for idx in entity_indices]
             entity_hposet = HPOSet(entity_terms)
             sim = _ic_weighted_one_way_sim(hposet, entity_hposet, kind=kind, method=method)
         except Exception:
@@ -1048,9 +1060,366 @@ def gene_prioritization_pipeline(
     }
 
 
+# ── VariMAT variant-file cross-reference (separate from gene_prioritization_pipeline) ──
+_VARIANT_PRIMARY_TIERS = {0, 1}  # Pathogenic, Likely Pathogenic
+_VARIANT_FALLBACK_TIERS = {2}  # Uncertain Significance
+
+# Inheritance-mode tokens (parsed from the file's own ACMG_Criteria, see
+# varimat_parser._extract_inheritance_mode) that mean "recessive only" --
+# a single heterozygous hit cannot by itself explain disease for these.
+_RECESSIVE_ONLY_MODES = {"AR"}
+
+
+def _zygosity_warning(candidate_variants: list[dict[str, Any]]) -> "str | None":
+    """
+    Flag genes whose qualifying variant(s) can't structurally explain disease
+    given the file's own declared inheritance mode: a lone heterozygous
+    variant in an autosomal-recessive-only (AR) gene needs a second variant
+    (compound het) or a homozygous call to actually be causal.
+
+    Conservative by design: only warns when *every* candidate variant has a
+    positively-identified AR-only mode. Missing/unknown inheritance, or any
+    AD/AD_AR/XL variant in the mix, means dominant inheritance can't be ruled
+    out, so a single heterozygous hit stays unflagged.
+    """
+    modes = {v.get("inheritance_mode", "") for v in candidate_variants}
+    if not modes or not modes.issubset(_RECESSIVE_ONLY_MODES):
+        return None
+
+    if any(v.get("zygosity", "").lower() == "homozygous" for v in candidate_variants):
+        return None  # a homozygous AR variant is sufficient on its own
+
+    heterozygous = [v for v in candidate_variants if v.get("zygosity", "").lower() == "heterozygous"]
+    distinct_variants = {v.get("variant_id") for v in heterozygous}
+    if len(distinct_variants) >= 2:
+        return None  # >=2 distinct het variants: plausible compound het, not flagged
+
+    if len(distinct_variants) == 1:
+        return (
+            "This gene's only qualifying variant is a single heterozygous hit, but the file's "
+            "ACMG criteria mark this gene's inheritance as recessive-only (AR). A lone "
+            "heterozygous variant cannot by itself explain an autosomal recessive disease — "
+            "a second variant (compound heterozygous) or a homozygous call would be needed."
+        )
+    return None
+
+
+def _select_candidate_variants(
+    variants: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Filter-then-rank: prefer Pathogenic/Likely Pathogenic; fall back to VUS
+    if none are P/LP. Benign/Likely Benign/unclassified are never candidates.
+
+    Returns (candidates, everything_else) -- everything_else is reported as
+    "ruled out" rather than dropped, so a benign-only gene stays visible.
+    """
+    primary = [v for v in variants if v["classification_tier"] in _VARIANT_PRIMARY_TIERS]
+    if primary:
+        keep = {id(v) for v in primary}
+        return primary, [v for v in variants if id(v) not in keep]
+
+    fallback = [v for v in variants if v["classification_tier"] in _VARIANT_FALLBACK_TIERS]
+    if fallback:
+        keep = {id(v) for v in fallback}
+        return fallback, [v for v in variants if id(v) not in keep]
+
+    return [], list(variants)
+
+
+def _resolve_gene(symbol: str) -> Any | None:
+    from pyhpo.annotations import Gene
+
+    for candidate in (symbol, symbol.upper()):
+        try:
+            return Gene.get(candidate)
+        except Exception:
+            continue
+    return None
+
+
+# ── Short-lived server-side cache for variant-file drill-down lookups ──
+# At whole-exome/genome scale, the "no phenotype overlap" bucket can hold
+# thousands of genes -- too much to inline in full detail on every request.
+# The main response returns a lightweight summary + a token; a follow-up call
+# to variant_file_gene_detail() fetches full variant detail for genes the
+# user actually wants to inspect, without re-uploading or re-parsing the file.
+_VARIANT_FILE_CACHE_TTL_SECONDS = 20 * 60
+_variant_file_cache: dict[str, tuple[float, dict[str, list[dict[str, Any]]]]] = {}
+
+
+def _cache_variant_file(variants_by_canonical: dict[str, list[dict[str, Any]]]) -> str:
+    import time
+    import uuid
+
+    now = time.time()
+    # Opportunistic cleanup so this dict doesn't grow unbounded across uploads.
+    expired = [tok for tok, (exp, _) in _variant_file_cache.items() if exp < now]
+    for tok in expired:
+        del _variant_file_cache[tok]
+
+    token = uuid.uuid4().hex
+    _variant_file_cache[token] = (now + _VARIANT_FILE_CACHE_TTL_SECONDS, variants_by_canonical)
+    return token
+
+
+def variant_file_gene_detail(token: str, genes: list[str]) -> dict[str, Any]:
+    """Look up full variant detail for specific genes from a cached upload (see :func:`variant_prioritization_from_file`)."""
+    import time
+
+    entry = _variant_file_cache.get(token)
+    if entry is None:
+        raise ValueError("This upload has expired or was never cached. Re-run the cross-reference to look up genes again.")
+    expiry, variants_by_canonical = entry
+    if expiry < time.time():
+        del _variant_file_cache[token]
+        raise ValueError("This upload has expired. Re-run the cross-reference to look up genes again.")
+
+    results = []
+    for raw_name in genes:
+        gene_obj = _resolve_gene(raw_name.strip())
+        canonical = gene_obj.name if gene_obj is not None else raw_name.strip().upper()
+        variants = variants_by_canonical.get(canonical, [])
+        candidates, ruled_out_variants = _select_candidate_variants(variants)
+        results.append(
+            {
+                "name": canonical,
+                "found": bool(variants),
+                "candidate_variants": candidates,
+                "ruled_out_variants": ruled_out_variants,
+                "zygosity_warning": _zygosity_warning(candidates) if candidates else None,
+            }
+        )
+    return {"results": results}
+
+
+def variant_prioritization_from_file(
+    queries: list[str],
+    varimat_content: str,
+    *,
+    remove_modifiers: bool = False,
+    replace_obsolete: bool = True,
+    expand_ic: bool = True,
+    ic_expansion_threshold: float = 2.0,
+    top_n: int = 100,
+) -> dict[str, Any]:
+    """
+    Cross-reference a VariMAT variant export against the patient's HPO profile.
+
+    Genes present in both the file and the ontology are ranked by HPO
+    similarity (reusing :func:`_score_catalog`, same as the gene
+    prioritization pipeline). Each ranked gene is annotated with its
+    Pathogenic/Likely Pathogenic variants from the file (VUS as fallback if
+    none), plus a bridge disease via :func:`_find_bridge_disease`.
+
+    Three result buckets, so nothing with a clinically relevant classification
+    is silently dropped:
+      * ``candidates``            -- genes with >=1 qualifying variant, ranked
+        by HPO similarity to the patient.
+      * ``ruled_out``             -- genes that matched the patient's
+        phenotype but only have Benign/Likely Benign variants in the file.
+      * ``no_phenotype_overlap``  -- genes with a qualifying variant in the
+        file that share zero HPO terms with the (possibly IC-expanded)
+        patient profile, so they can't be ranked but are still worth a look.
+    """
+    from pyhpo import Ontology
+    from varimat_parser import parse_varimat
+
+    hposet, failed_hpo = build_hposet_from_queries(
+        queries, remove_modifiers=remove_modifiers, replace_obsolete=replace_obsolete
+    )
+    if hposet is None or len(hposet) == 0:
+        raise ValueError("No valid HPO terms resolved")
+
+    expanded_terms: list[dict[str, Any]] = []
+    if expand_ic:
+        hposet, expanded_terms = _expand_with_ic_filter(hposet, ic_threshold=ic_expansion_threshold)
+
+    # Only genes with an HPO annotation can ever be scored -- typically ~5k of the
+    # ~20k genes in a raw whole-exome/genome export. Filtering by this allowlist
+    # during parsing (rather than after) skips full record-building for the ~75%
+    # of rows that would be discarded anyway, which is where nearly all parsing
+    # time/memory goes at that scale.
+    gene_allowlist = {g.name.upper() for g in Ontology.genes}
+    parsed = parse_varimat(varimat_content, gene_allowlist=gene_allowlist)
+
+    resolved_by_name: dict[str, Any] = {}
+    unresolved_genes: list[str] = []
+    variants_by_canonical: dict[str, list[dict[str, Any]]] = {}
+    for symbol, variants in parsed["variants_by_gene"].items():
+        gene_obj = _resolve_gene(symbol)
+        if gene_obj is None:
+            unresolved_genes.append(symbol)
+            continue
+        resolved_by_name[gene_obj.name] = gene_obj
+        variants_by_canonical.setdefault(gene_obj.name, []).extend(variants)
+
+    if not resolved_by_name:
+        raise ValueError(
+            f"None of the {parsed['genes_seen_total']} gene symbol(s) in the VariMAT file "
+            "could be matched to the PyHPO ontology."
+        )
+
+    resolved_genes = list(resolved_by_name.values())
+    gene_scores = _score_catalog(hposet, resolved_genes, top_n=len(resolved_genes))
+    scored_names = {gr["name"] for gr in gene_scores}
+
+    disease_results_full = _score_catalog(hposet, Ontology.omim_diseases, top_n=200)
+
+    def _attach_variants(gr: dict[str, Any]) -> dict[str, Any]:
+        variants = variants_by_canonical.get(gr["name"], [])
+        candidates, ruled_out_variants = _select_candidate_variants(variants)
+        row = {k: v for k, v in gr.items() if not k.startswith("_")}
+        row["hpo_rank"] = row.pop("rank", None)
+        row["bridge_disease"] = _find_bridge_disease(row["name"], disease_results_full)
+        row["candidate_variants"] = candidates
+        row["ruled_out_variants"] = ruled_out_variants
+        row["zygosity_warning"] = _zygosity_warning(candidates) if candidates else None
+        return row
+
+    candidates: list[dict[str, Any]] = []
+    ruled_out: list[dict[str, Any]] = []
+    for gr in gene_scores:
+        row = _attach_variants(gr)
+        (candidates if row["candidate_variants"] else ruled_out).append(row)
+
+    for i, r in enumerate(candidates):
+        r["rank"] = i + 1
+
+    # Genes with a qualifying variant but zero HPO overlap with the (possibly
+    # IC-expanded) patient profile: can't be ranked, but a real Pathogenic/VUS
+    # finding should never just vanish because the phenotype list didn't cover
+    # it. At whole-exome scale this bucket can hold thousands of genes, so the
+    # main response carries only a lightweight summary per gene; full detail
+    # for any of them is available via variant_file_gene_detail() + the token.
+    no_phenotype_overlap_summary: list[dict[str, Any]] = []
+    for gene_obj in resolved_genes:
+        if gene_obj.name in scored_names:
+            continue
+        cand, ro = _select_candidate_variants(variants_by_canonical.get(gene_obj.name, []))
+        if not cand:
+            continue
+        no_phenotype_overlap_summary.append(
+            {
+                "name": gene_obj.name,
+                "best_classification": cand[0]["classification"],
+                "best_classification_tier": cand[0]["classification_tier"],
+                "candidate_variant_count": len(cand),
+                "ruled_out_variant_count": len(ro),
+                "has_zygosity_warning": _zygosity_warning(cand) is not None,
+            }
+        )
+    no_phenotype_overlap_summary.sort(key=lambda r: (r["best_classification_tier"], r["name"]))
+
+    lookup_token = _cache_variant_file(variants_by_canonical)
+
+    return {
+        "candidates": candidates[:top_n],
+        "ruled_out": ruled_out,
+        "no_phenotype_overlap": {
+            "count": len(no_phenotype_overlap_summary),
+            "summary": no_phenotype_overlap_summary,
+        },
+        "lookup_token": lookup_token,
+        "unresolved_genes": unresolved_genes,
+        "unresolved_hpo_terms": failed_hpo,
+        "expanded_terms": expanded_terms,
+        "file_summary": {
+            "total_rows": parsed["total_rows"],
+            "total_variants": parsed["total_variants"],
+            "skipped_rows": parsed["skipped_rows"],
+            "skipped_no_hpo_annotation_rows": parsed["skipped_unresolved_gene_rows"],
+            "genes_seen_total": parsed["genes_seen_total"],
+            "genes_with_hpo_annotation": len(resolved_genes),
+        },
+        "hposet_size": len(hposet),
+    }
+
+
 def warm_all_caches() -> None:
     ensure_ontology_loaded()
     for cat in ("omim", "gene", "orpha", "decipher"):
         get_enrichment_model(cat)
     get_hpo_enrichment("gene")
     get_hpo_enrichment("omim")
+
+
+# ── Async job/poll pattern for variant-file cross-reference ──
+# A whole-exome/genome VariMAT upload can take several seconds to tens of
+# seconds to process even after optimization -- too long to trust a single
+# synchronous HTTP request against reverse-proxy/gateway timeouts. The submit
+# endpoint validates + decodes the upload (fast) and hands the actual
+# parse+score work to a background thread, returning a job_id immediately;
+# the frontend polls the status endpoint until the job finishes.
+MAX_VARIMAT_WORKERS = 2
+_VARIANT_JOB_TTL_SECONDS = 30 * 60
+_variant_job_executor = ThreadPoolExecutor(max_workers=MAX_VARIMAT_WORKERS)
+_variant_jobs: dict[str, dict[str, Any]] = {}
+_variant_jobs_lock = threading.Lock()
+
+
+def _prune_variant_jobs() -> None:
+    import time
+
+    now = time.time()
+    with _variant_jobs_lock:
+        expired = [jid for jid, j in _variant_jobs.items() if j["expires_at"] < now]
+        for jid in expired:
+            del _variant_jobs[jid]
+
+
+def _run_variant_job(job_id: str, queries: list[str], varimat_content: str, kwargs: dict[str, Any]) -> None:
+    import time
+
+    with _variant_jobs_lock:
+        if job_id not in _variant_jobs:
+            return  # pruned/expired before it started
+        _variant_jobs[job_id]["status"] = "running"
+
+    try:
+        result = variant_prioritization_from_file(queries, varimat_content, **kwargs)
+        with _variant_jobs_lock:
+            if job_id in _variant_jobs:
+                _variant_jobs[job_id]["status"] = "done"
+                _variant_jobs[job_id]["result"] = result
+    except Exception as exc:  # noqa: BLE001
+        with _variant_jobs_lock:
+            if job_id in _variant_jobs:
+                _variant_jobs[job_id]["status"] = "error"
+                _variant_jobs[job_id]["error"] = str(exc)
+    finally:
+        with _variant_jobs_lock:
+            if job_id in _variant_jobs:
+                _variant_jobs[job_id]["expires_at"] = time.time() + _VARIANT_JOB_TTL_SECONDS
+
+
+def submit_variant_prioritization_job(queries: list[str], varimat_content: str, **kwargs: Any) -> str:
+    """Kick off variant_prioritization_from_file() in a background thread; returns a poll-able job_id."""
+    import time
+    import uuid
+
+    _prune_variant_jobs()
+    job_id = uuid.uuid4().hex
+    with _variant_jobs_lock:
+        _variant_jobs[job_id] = {
+            "status": "queued",
+            "result": None,
+            "error": None,
+            # Generous TTL while queued/running so a slow job is never pruned out from under itself;
+            # tightened to _VARIANT_JOB_TTL_SECONDS once it finishes (see _run_variant_job's finally).
+            "expires_at": time.time() + max(_VARIANT_JOB_TTL_SECONDS, 3600),
+        }
+    _variant_job_executor.submit(_run_variant_job, job_id, queries, varimat_content, kwargs)
+    return job_id
+
+
+def get_variant_prioritization_job(job_id: str) -> dict[str, Any]:
+    with _variant_jobs_lock:
+        job = _variant_jobs.get(job_id)
+        if job is None:
+            raise ValueError("Job not found or expired. Re-submit the file.")
+        return {
+            "status": job["status"],
+            "result": job["result"] if job["status"] == "done" else None,
+            "error": job["error"] if job["status"] == "error" else None,
+        }
