@@ -1193,9 +1193,58 @@ def variant_file_gene_detail(token: str, genes: list[str]) -> dict[str, Any]:
     return {"results": results}
 
 
+_GZIP_MAGIC = b"\x1f\x8b"
+_MAX_DECOMPRESSED_BYTES = 6 * 1024 * 1024 * 1024  # 6GB -- headroom above the ~5GB whole-genome case
+
+
+class _SizeLimitedLines:
+    """
+    Wraps a line iterator (file, gzip stream, ...) and enforces a cumulative
+    byte ceiling as lines are consumed. Protects against decompression bombs
+    -- a small malicious/corrupt .gz that would expand far past what a real
+    VariMAT export ever needs -- without ever holding the content it counts
+    in memory at once (it just measures and passes each line through).
+    """
+
+    def __init__(self, lines, max_bytes: int) -> None:
+        self._lines = lines
+        self._max_bytes = max_bytes
+        self._total = 0
+
+    def __iter__(self):
+        for line in self._lines:
+            self._total += len(line.encode("utf-8", errors="ignore"))
+            if self._total > self._max_bytes:
+                from varimat_parser import VarimatParseError
+
+                raise VarimatParseError(
+                    f"Decompressed content exceeds the {self._max_bytes // (1024 ** 3)}GB limit"
+                )
+            yield line
+
+
+def _open_varimat_lines(path: str):
+    """
+    Open a VariMAT upload for streaming, transparently handling gzip.
+
+    Detected by magic bytes, not the file extension. Both branches stream --
+    gzip.open(..., "rt") decompresses on read rather than all at once, so
+    memory use stays bounded regardless of how large the file is decompressed.
+    """
+    import gzip
+
+    with open(path, "rb") as probe:
+        magic = probe.read(2)
+    if magic == _GZIP_MAGIC:
+        fh = gzip.open(path, mode="rt", encoding="utf-8-sig")
+    else:
+        fh = open(path, mode="rt", encoding="utf-8-sig")
+    return _SizeLimitedLines(fh, _MAX_DECOMPRESSED_BYTES), fh
+
+
 def variant_prioritization_from_file(
     queries: list[str],
-    varimat_content: str,
+    varimat_path: str,
     *,
     remove_modifiers: bool = False,
     replace_obsolete: bool = True,
@@ -1205,6 +1254,11 @@ def variant_prioritization_from_file(
 ) -> dict[str, Any]:
     """
     Cross-reference a VariMAT variant export against the patient's HPO profile.
+
+    ``varimat_path`` is a path to the uploaded file on disk (plain text or
+    gzip) rather than pre-loaded content -- it's streamed and parsed line by
+    line (see :func:`_open_varimat_lines`, :func:`varimat_parser.parse_varimat_lines`)
+    so a multi-GB whole-genome export never needs to be held in memory whole.
 
     Genes present in both the file and the ontology are ranked by HPO
     similarity (reusing :func:`_score_catalog`, same as the gene
@@ -1223,7 +1277,7 @@ def variant_prioritization_from_file(
         patient profile, so they can't be ranked but are still worth a look.
     """
     from pyhpo import Ontology
-    from varimat_parser import parse_varimat
+    from varimat_parser import parse_varimat_lines
 
     hposet, failed_hpo = build_hposet_from_queries(
         queries, remove_modifiers=remove_modifiers, replace_obsolete=replace_obsolete
@@ -1241,7 +1295,14 @@ def variant_prioritization_from_file(
     # of rows that would be discarded anyway, which is where nearly all parsing
     # time/memory goes at that scale.
     gene_allowlist = {g.name.upper() for g in Ontology.genes}
-    parsed = parse_varimat(varimat_content, gene_allowlist=gene_allowlist)
+    lines, fh = _open_varimat_lines(varimat_path)
+    try:
+        try:
+            parsed = parse_varimat_lines(lines, gene_allowlist=gene_allowlist)
+        except (OSError, EOFError) as exc:
+            raise ValueError("Could not decompress .gz file — is it a valid gzip archive?") from exc
+    finally:
+        fh.close()
 
     resolved_by_name: dict[str, Any] = {}
     unresolved_genes: list[str] = []
@@ -1369,16 +1430,18 @@ def _prune_variant_jobs() -> None:
             del _variant_jobs[jid]
 
 
-def _run_variant_job(job_id: str, queries: list[str], varimat_content: str, kwargs: dict[str, Any]) -> None:
+def _run_variant_job(job_id: str, queries: list[str], varimat_path: str, kwargs: dict[str, Any]) -> None:
+    import os
     import time
 
     with _variant_jobs_lock:
         if job_id not in _variant_jobs:
-            return  # pruned/expired before it started
+            os.unlink(varimat_path)  # pruned/expired before it started -- still owns the temp file
+            return
         _variant_jobs[job_id]["status"] = "running"
 
     try:
-        result = variant_prioritization_from_file(queries, varimat_content, **kwargs)
+        result = variant_prioritization_from_file(queries, varimat_path, **kwargs)
         with _variant_jobs_lock:
             if job_id in _variant_jobs:
                 _variant_jobs[job_id]["status"] = "done"
@@ -1392,10 +1455,19 @@ def _run_variant_job(job_id: str, queries: list[str], varimat_content: str, kwar
         with _variant_jobs_lock:
             if job_id in _variant_jobs:
                 _variant_jobs[job_id]["expires_at"] = time.time() + _VARIANT_JOB_TTL_SECONDS
+        try:
+            os.unlink(varimat_path)  # the uploaded temp file is single-use; job owns its lifecycle
+        except OSError:
+            pass
 
 
-def submit_variant_prioritization_job(queries: list[str], varimat_content: str, **kwargs: Any) -> str:
-    """Kick off variant_prioritization_from_file() in a background thread; returns a poll-able job_id."""
+def submit_variant_prioritization_job(queries: list[str], varimat_path: str, **kwargs: Any) -> str:
+    """
+    Kick off variant_prioritization_from_file() in a background thread; returns
+    a poll-able job_id. ``varimat_path`` is a temp file the caller has already
+    written the upload to -- ownership (including deletion once the job
+    finishes, success or error) transfers to this job.
+    """
     import time
     import uuid
 
@@ -1410,7 +1482,7 @@ def submit_variant_prioritization_job(queries: list[str], varimat_content: str, 
             # tightened to _VARIANT_JOB_TTL_SECONDS once it finishes (see _run_variant_job's finally).
             "expires_at": time.time() + max(_VARIANT_JOB_TTL_SECONDS, 3600),
         }
-    _variant_job_executor.submit(_run_variant_job, job_id, queries, varimat_content, kwargs)
+    _variant_job_executor.submit(_run_variant_job, job_id, queries, varimat_path, kwargs)
     return job_id
 
 

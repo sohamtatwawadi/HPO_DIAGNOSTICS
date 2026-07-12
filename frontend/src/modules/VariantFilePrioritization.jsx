@@ -460,7 +460,7 @@ export default function VariantFilePrioritization() {
                 }}
               >
                 <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>
-                  VariMAT file (.txt / .tsv / .gz, up to 500MB)
+                  VariMAT file (.txt / .tsv / .gz, up to 2GB upload · 5GB decompressed)
                 </div>
                 <div style={{ color: C.textMuted, wordBreak: "break-all", overflowWrap: "anywhere" }}>
                   {fileName || "Click to choose a file…"}

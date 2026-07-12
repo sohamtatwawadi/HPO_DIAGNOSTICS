@@ -3,11 +3,10 @@ HPO Diagnostics API — FastAPI + PyHPO 4.
 """
 from __future__ import annotations
 
-import gzip
-import io
 import logging
 import os
 import sys
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -28,43 +27,15 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-_MAX_VARIMAT_BYTES = 500 * 1024 * 1024  # 500MB — whole-exome/genome VariMAT exports (~20k genes) are the expected case
-_GZIP_MAGIC = b"\x1f\x8b"
-
-
-def _decode_varimat_upload(raw: bytes) -> str:
-    """
-    Decode an uploaded VariMAT file to text, transparently handling gzip.
-
-    Detected by magic bytes (not filename), so it works regardless of what
-    the browser named the upload. Decompression is bounded by the same
-    _MAX_VARIMAT_BYTES ceiling as a plain upload, read incrementally rather
-    than all at once, so a small malicious/corrupt .gz can't be used as a
-    decompression bomb to exhaust server memory.
-    """
-    if raw[:2] == _GZIP_MAGIC:
-        chunks = []
-        total = 0
-        try:
-            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
-                while True:
-                    chunk = gz.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > _MAX_VARIMAT_BYTES:
-                        raise HTTPException(
-                            400, f"Decompressed file too large (max {_MAX_VARIMAT_BYTES // (1024 * 1024)}MB)"
-                        )
-                    chunks.append(chunk)
-        except gzip.BadGzipFile as exc:
-            raise HTTPException(400, "Could not decompress .gz file — is it a valid gzip archive?") from exc
-        raw = b"".join(chunks)
-
-    try:
-        return raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(400, "File must be UTF-8 text (plain or gzip-compressed)") from exc
+# Cap on bytes actually received over HTTP (plain text or gzip). Uploads are
+# streamed straight to a temp file in chunks (see variant_prioritize_file),
+# never buffered whole in memory, so this is a sanity/disk-space ceiling, not
+# a memory-safety one. Whole-genome VariMAT exports run ~150-250MB gzipped
+# per the real files this is built against; 2GB leaves generous headroom,
+# including for uncompressed uploads. The *decompressed* content can be much
+# larger -- see pyhpo_service._MAX_DECOMPRESSED_BYTES (6GB), enforced while
+# streaming during parsing, not here.
+_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 
 @asynccontextmanager
@@ -228,29 +199,48 @@ async def variant_prioritize_file(
 ):
     """
     Submit a VariMAT upload for background processing. Returns a job_id
-    immediately (validation/decoding only, no scoring) -- poll
-    GET /api/variant-prioritize-file/status/{job_id} for the result. A
-    whole-exome/genome file can take several seconds to score, which is too
-    long to trust a single synchronous request against gateway timeouts.
+    immediately -- poll GET /api/variant-prioritize-file/status/{job_id} for
+    the result. A whole-exome/genome file can take a while to score (and, at
+    multi-GB scale, a while just to read), which is too long to trust a
+    single synchronous request against gateway timeouts.
+
+    The upload is streamed straight to a temp file in bounded chunks -- never
+    held whole in memory, however large it is -- and ownership of that temp
+    file (including deletion once done) transfers to the background job. Gzip
+    is detected and decompressed on read during parsing (see
+    pyhpo_service._open_varimat_lines), also streamed, so multi-GB
+    decompressed content never needs to fit in memory at once either.
     """
     if not 1 <= top_n <= 1000:
         raise HTTPException(400, "top_n must be between 1 and 1000")
     if not 0.0 <= ic_expansion_threshold <= 10.0:
         raise HTTPException(400, "ic_expansion_threshold must be between 0 and 10")
 
-    raw = await file.read()
-    if len(raw) > _MAX_VARIMAT_BYTES:
-        raise HTTPException(400, f"File too large (max {_MAX_VARIMAT_BYTES // (1024 * 1024)}MB)")
-    content = _decode_varimat_upload(raw)
-    del raw  # free the raw-bytes copy before parsing holds the decoded string + row data
-
     queries = [q.strip() for q in hpo_terms.replace(",", "\n").split("\n") if q.strip()]
     if not queries:
         raise HTTPException(400, "No HPO terms provided")
 
+    fd, tmp_path = tempfile.mkstemp(suffix=".varimat.upload")
+    try:
+        total = 0
+        with os.fdopen(fd, "wb") as tmp:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_UPLOAD_BYTES:
+                    raise HTTPException(400, f"Upload too large (max {_MAX_UPLOAD_BYTES // (1024 ** 3)}GB)")
+                tmp.write(chunk)
+        if total == 0:
+            raise HTTPException(400, "Uploaded file is empty")
+    except Exception:
+        os.unlink(tmp_path)
+        raise
+
     job_id = svc.submit_variant_prioritization_job(
         queries,
-        content,
+        tmp_path,
         remove_modifiers=remove_modifiers,
         replace_obsolete=replace_obsolete,
         expand_ic=expand_ic,

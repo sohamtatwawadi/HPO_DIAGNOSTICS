@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Any, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 TIER_PATHOGENIC = 0
 TIER_LIKELY_PATHOGENIC = 1
@@ -184,12 +184,30 @@ def parse_varimat(
     content: str,
     gene_allowlist: Optional[set[str]] = None,
 ) -> "dict[str, Any]":
+    """Convenience wrapper: parse an already-in-memory string. See :func:`parse_varimat_lines`."""
+    return parse_varimat_lines(io.StringIO(content), gene_allowlist=gene_allowlist)
+
+
+def parse_varimat_lines(
+    lines: Iterable[str],
+    gene_allowlist: Optional[set[str]] = None,
+) -> "dict[str, Any]":
     """
     Parse VariMAT tab-delimited text into per-gene, deduplicated variant records.
 
+    Takes a line iterator rather than a full string so the caller can stream
+    from disk (or a gzip decompressor) without ever holding the whole file in
+    memory -- whole-exome/genome VariMAT exports can be multiple GB
+    decompressed. Only rows for genes in ``gene_allowlist`` (and only their
+    MANE/canonical transcript row) are ever turned into a full record and
+    retained, so the amount of data actually kept in memory is bounded by the
+    ontology's HPO-annotated gene count (~5k genes), not by input file size --
+    it's specifically the *scanning* phase that needs to be streaming.
+
     Parameters
     ----------
-    content: the raw file text.
+    lines: iterable of text lines (e.g. an open file, io.StringIO, or a
+        generator wrapping a gzip stream).
     gene_allowlist: optional set of UPPERCASED gene symbols to keep. When
         given, rows for any other gene are counted in
         ``skipped_unresolved_gene_rows`` and never turned into a full record
@@ -219,7 +237,7 @@ def parse_varimat(
         but none flagged MANE/canonical, so no reliable annotation to use
       genes: list[str]         -- sorted unique gene symbols found (kept genes only)
     """
-    reader = csv.reader(io.StringIO(content), delimiter="\t")
+    reader = csv.reader(lines, delimiter="\t")
     try:
         header = next(reader)
     except StopIteration as exc:
