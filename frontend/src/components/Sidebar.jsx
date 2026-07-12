@@ -13,16 +13,10 @@ const linkStyle = ({ isActive }) => ({
 });
 
 const NAV = [
-  ["/workflow", "7-step workflow"],
   ["/ddx", "Differential diagnosis"],
-  ["/patient-similarity", "Patient similarity"],
-  ["/gene-enrichment", "Gene enrichment"],
-  ["/cohort", "Cohort analysis"],
-  ["/variant-prioritizer", "Variant prioritizer"],
   ["/disease", "Disease deep-dive"],
   ["/term-explorer", "HPO term explorer"],
   ["/ic-profiler", "IC profiler"],
-  ["/report", "Report builder"],
 ];
 
 const NAV_NEW = [

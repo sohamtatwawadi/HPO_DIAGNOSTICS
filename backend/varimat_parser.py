@@ -129,16 +129,22 @@ class _RowView:
         return self._row[i]
 
 
+def _is_canonical_row(row: Sequence[str], mane_i: "int | None", canon_i: "int | None") -> bool:
+    """True if this row is the MANE-select transcript or flagged canonical."""
+    mane = row[mane_i] if mane_i is not None and mane_i < len(row) else ""
+    if _clean(mane):
+        return True
+    canon = row[canon_i] if canon_i is not None and canon_i < len(row) else ""
+    return _clean(canon).upper() == "Y"
+
+
 def _pick_representative(rows: "list[_RowView]") -> "_RowView":
     """
-    A VARIANT_ID group has one row per transcript annotation. Prefer the
-    MANE-select transcript, then the row flagged canonical, else the first row.
+    Every row here already passed _is_canonical_row. Prefer the MANE-select
+    transcript over a merely canonical-flagged one; ties broken by first seen.
     """
     for row in rows:
         if _clean(row.get("MANE")):
-            return row
-    for row in rows:
-        if _clean(row.get("CANNONICAL_TRAS")).upper() == "Y":
             return row
     return rows[0]
 
@@ -191,6 +197,15 @@ def parse_varimat(
         variant export's genes typically have no HPO annotation at all and
         can never be scored downstream.
 
+    Only the MANE-select transcript row (or, failing that, the row flagged
+    canonical) is kept per variant -- other transcript annotations for the
+    same variant are discarded outright rather than used as a fallback.
+    Different transcripts can carry different consequences and even
+    different ACMG calls for the same genomic variant, so falling back to an
+    arbitrary non-canonical row risks a misleading annotation. A variant with
+    no MANE/canonical row anywhere in its group is dropped and counted in
+    ``variants_dropped_no_canonical_transcript`` rather than silently guessed at.
+
     Returns
     -------
     dict with:
@@ -200,6 +215,8 @@ def parse_varimat(
       total_variants: int      -- unique (gene, VARIANT_ID) records kept
       skipped_rows: int        -- rows dropped (missing gene or VARIANT_ID)
       skipped_unresolved_gene_rows: int -- rows dropped by gene_allowlist
+      variants_dropped_no_canonical_transcript: int -- variants with rows,
+        but none flagged MANE/canonical, so no reliable annotation to use
       genes: list[str]         -- sorted unique gene symbols found (kept genes only)
     """
     reader = csv.reader(io.StringIO(content), delimiter="\t")
@@ -218,9 +235,12 @@ def parse_varimat(
 
     gene_i = col_idx["GENE_NAME"]
     vid_i = col_idx["VARIANT_ID"]
+    mane_i = col_idx.get("MANE")
+    canon_i = col_idx.get("CANNONICAL_TRAS")
     keep_cols = {c: col_idx[c] for c in _RECORD_COLUMNS if c in col_idx}
 
     groups: "dict[tuple[str, str], list[list[str]]]" = {}
+    seen_variant_keys: set[tuple[str, str]] = set()
     all_genes_seen: set[str] = set()
     total_rows = 0
     skipped_rows = 0
@@ -235,6 +255,9 @@ def parse_varimat(
         all_genes_seen.add(gene.upper())
         if gene_allowlist is not None and gene.upper() not in gene_allowlist:
             skipped_unresolved_gene_rows += 1
+            continue
+        seen_variant_keys.add((gene, variant_id))
+        if not _is_canonical_row(row, mane_i, canon_i):
             continue
         groups.setdefault((gene, variant_id), []).append(row)
 
@@ -254,6 +277,7 @@ def parse_varimat(
         "total_variants": sum(len(v) for v in variants_by_gene.values()),
         "skipped_rows": skipped_rows,
         "skipped_unresolved_gene_rows": skipped_unresolved_gene_rows,
+        "variants_dropped_no_canonical_transcript": len(seen_variant_keys - set(groups.keys())),
         "genes": sorted(variants_by_gene.keys()),
         "genes_seen_total": len(all_genes_seen),
     }

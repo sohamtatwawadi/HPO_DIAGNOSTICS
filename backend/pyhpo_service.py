@@ -1329,6 +1329,7 @@ def variant_prioritization_from_file(
             "total_variants": parsed["total_variants"],
             "skipped_rows": parsed["skipped_rows"],
             "skipped_no_hpo_annotation_rows": parsed["skipped_unresolved_gene_rows"],
+            "variants_dropped_no_canonical_transcript": parsed["variants_dropped_no_canonical_transcript"],
             "genes_seen_total": parsed["genes_seen_total"],
             "genes_with_hpo_annotation": len(resolved_genes),
         },

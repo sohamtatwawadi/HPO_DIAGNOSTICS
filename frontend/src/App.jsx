@@ -51,7 +51,7 @@ export default function App() {
           <HealthBanner />
           <main style={{ padding: "24px 28px 40px", flex: 1, background: C.pageBg }}>
             <Routes>
-              <Route path="/" element={<Navigate to="/workflow" replace />} />
+              <Route path="/" element={<Navigate to="/variant-file-prioritization" replace />} />
               <Route path="/workflow" element={<WorkflowView />} />
               <Route path="/ddx" element={<DDX />} />
               <Route path="/patient-similarity" element={<PatientSimilarity />} />

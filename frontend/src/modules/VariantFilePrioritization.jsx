@@ -27,51 +27,108 @@ function ClassificationBadge({ tier, label }) {
   return <Badge tone={tone}>{label}</Badge>;
 }
 
+/** gnomAD AF as a readable percentage, e.g. 6.57e-6 -> "0.000657%". */
+function formatMafPercent(af) {
+  const pct = af * 100;
+  if (pct === 0) return "0%";
+  return `${pct.toPrecision(3)}%`;
+}
+
 function VariantRow({ v }) {
+  const [showCriteria, setShowCriteria] = useState(false);
+  const criteriaTokens = v.acmg_criteria ? v.acmg_criteria.split(";").map((c) => c.trim()).filter(Boolean) : [];
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 10,
-        alignItems: "center",
-        padding: "8px 10px",
-        borderRadius: 6,
-        background: surfaceAlt,
-        border: `0.5px solid ${C.border}`,
-        marginBottom: 6,
-        fontSize: 12,
-      }}
-    >
-      <ClassificationBadge tier={v.classification_tier} label={v.classification} />
-      <span style={{ fontFamily: C.fontMono, fontWeight: 600, color: C.text }}>
-        {v.aa_change || v.cdna_change || v.hgvsg || "—"}
-      </span>
-      {v.varclass && <span style={{ color: C.textMuted }}>{v.varclass}</span>}
-      {v.zygosity && <span style={{ color: C.textMuted }}>{v.zygosity}</span>}
-      {v.inheritance_mode && (
-        <span style={{ color: C.textMuted, fontFamily: C.fontMono }} title="Inheritance mode from the file's own ACMG criteria">
-          {v.inheritance_mode}
+    <div style={{ marginBottom: 6 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 10,
+          alignItems: "center",
+          padding: "8px 10px",
+          borderRadius: showCriteria ? "6px 6px 0 0" : 6,
+          background: surfaceAlt,
+          border: `0.5px solid ${C.border}`,
+          borderBottom: showCriteria ? "none" : `0.5px solid ${C.border}`,
+          fontSize: 12,
+        }}
+      >
+        <ClassificationBadge tier={v.classification_tier} label={v.classification} />
+        <span style={{ fontFamily: C.fontMono, fontWeight: 600, color: C.text }}>
+          {v.aa_change || v.cdna_change || v.hgvsg || "—"}
         </span>
-      )}
-      {v.gnomad_af != null && (
-        <span style={{ color: C.textMuted, fontFamily: C.fontMono }}>
-          gnomAD {v.gnomad_af.toExponential(2)}
+        {v.varclass && <span style={{ color: C.textMuted }}>{v.varclass}</span>}
+        {v.zygosity && <span style={{ color: C.textMuted }}>{v.zygosity}</span>}
+        {v.inheritance_mode && (
+          <span style={{ color: C.textMuted, fontFamily: C.fontMono }} title="Inheritance mode from the file's own ACMG criteria">
+            {v.inheritance_mode}
+          </span>
+        )}
+        <span
+          style={{ color: v.gnomad_af == null ? C.green : C.textMuted, fontFamily: C.fontMono }}
+          title="gnomAD population allele frequency (MAF) from the file"
+        >
+          {v.gnomad_af == null ? "Not in gnomAD" : `gnomAD ${formatMafPercent(v.gnomad_af)}`}
         </span>
-      )}
-      {v.transcript && (
-        <span style={{ color: C.textMuted, fontFamily: C.fontMono }}>{v.transcript}</span>
-      )}
-      {v.transcript_count > 1 && (
-        <span style={{ color: C.textMuted }}>{v.transcript_count} transcripts</span>
-      )}
-      {v.filter_status && v.filter_status !== "PASS" && (
-        <Badge tone="warn">{v.filter_status}</Badge>
-      )}
-      {v.acmg_criteria && (
-        <span title={v.acmg_criteria} style={{ color: C.textMuted, cursor: "help" }}>
-          criteria ⓘ
-        </span>
+        {v.transcript && (
+          <span style={{ color: C.textMuted, fontFamily: C.fontMono }}>{v.transcript}</span>
+        )}
+        {v.transcript_count > 1 && (
+          <span style={{ color: C.textMuted }}>{v.transcript_count} transcripts</span>
+        )}
+        {v.filter_status && v.filter_status !== "PASS" && (
+          <Badge tone="warn">{v.filter_status}</Badge>
+        )}
+        {criteriaTokens.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowCriteria((s) => !s)}
+            style={{
+              color: C.accent,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 12,
+              padding: 0,
+              textDecoration: "underline",
+              marginLeft: "auto",
+            }}
+          >
+            {showCriteria ? "Hide criteria" : "ACMG criteria ⓘ"}
+          </button>
+        )}
+      </div>
+      {showCriteria && criteriaTokens.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 5,
+            padding: "8px 10px",
+            borderRadius: "0 0 6px 6px",
+            background: C.pageBg,
+            border: `0.5px solid ${C.border}`,
+            borderTop: "none",
+          }}
+        >
+          {criteriaTokens.map((token, i) => (
+            <span
+              key={`${token}-${i}`}
+              style={{
+                fontSize: 11,
+                fontFamily: C.fontMono,
+                padding: "2px 8px",
+                borderRadius: 4,
+                background: C.card,
+                color: C.textSecondary,
+                border: `1px solid ${C.border}`,
+              }}
+            >
+              {token}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -324,6 +381,7 @@ export default function VariantFilePrioritization() {
   const [topN, setTopN] = useState(100);
   const [jobStatus, setJobStatus] = useState(null);
   const [lookupQuery, setLookupQuery] = useState("");
+  const [formCollapsed, setFormCollapsed] = useState(false);
   const fileRef = useRef(null);
   const mut = useVariantPrioritizeFile();
   const lookupMut = useVariantFileGeneDetail();
@@ -340,14 +398,17 @@ export default function VariantFilePrioritization() {
     const file = fileRef.current?.files?.[0];
     if (!terms.trim() || !file) return;
     setJobStatus(null);
-    mut.mutate({
-      hpoTerms: terms,
-      file,
-      expandIc: expandIC,
-      icExpansionThreshold: icThreshold,
-      topN,
-      onStatusChange: setJobStatus,
-    });
+    mut.mutate(
+      {
+        hpoTerms: terms,
+        file,
+        expandIc: expandIC,
+        icExpansionThreshold: icThreshold,
+        topN,
+        onStatusChange: setJobStatus,
+      },
+      { onSuccess: () => setFormCollapsed(true) }
+    );
   };
 
   const data = mut.data;
@@ -361,96 +422,113 @@ export default function VariantFilePrioritization() {
       />
 
       <Card style={{ marginBottom: 14 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 14 }}>
-          <div>
-            <Textarea
-              label="Patient HPO terms (one per line — ID or name)"
-              rows={8}
-              value={terms}
-              onChange={(e) => setTerms(e.target.value)}
-              placeholder={"HP:0000508\nHP:0001324\n..."}
-            />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: formCollapsed ? 0 : 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+            {formCollapsed
+              ? `${terms.split("\n").filter((l) => l.trim()).length} HPO term(s) · ${fileName || "no file"} · top ${topN}`
+              : "Inputs"}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <label
-              style={{
-                display: "block",
-                padding: "10px 12px",
-                background: surfaceAlt,
-                border: `1px dashed ${C.borderEmphasis}`,
-                borderRadius: 8,
-                cursor: "pointer",
-                fontSize: 12,
-              }}
-            >
-              <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>VariMAT file (.txt / .tsv, up to 500MB)</div>
-              <div style={{ color: C.textMuted }}>{fileName || "Click to choose a file…"}</div>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".txt,.tsv,text/tab-separated-values,text/plain"
-                onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")}
-                style={{ display: "none" }}
-              />
-            </label>
+          <button
+            type="button"
+            onClick={() => setFormCollapsed((c) => !c)}
+            style={{ fontSize: 12, color: C.accent, background: "none", border: "none", cursor: "pointer" }}
+          >
+            {formCollapsed ? "Edit inputs" : "Collapse"}
+          </button>
+        </div>
 
+        <div style={{ display: formCollapsed ? "none" : "grid", gridTemplateColumns: "1fr 260px", gap: 14 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 }}>Max ranked genes</div>
-              <input
-                type="range"
-                min={5}
-                max={1000}
-                step={5}
-                value={topN}
-                onChange={(e) => setTopN(+e.target.value)}
-                style={{ width: "100%" }}
+              <Textarea
+                label="Patient HPO terms (one per line — ID or name)"
+                rows={8}
+                value={terms}
+                onChange={(e) => setTerms(e.target.value)}
+                placeholder={"HP:0000508\nHP:0001324\n..."}
               />
-              <div style={{ fontSize: 11, color: C.textMuted }}>Top {topN}</div>
             </div>
-
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 10px",
-                background: surfaceAlt,
-                border: `1px solid ${C.border}`,
-                borderRadius: 8,
-                cursor: "pointer",
-              }}
-            >
-              <input type="checkbox" checked={expandIC} onChange={(e) => setExpandIC(e.target.checked)} />
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>IC-filtered term expansion</div>
-                <div style={{ fontSize: 10, color: C.textMuted }}>
-                  Adds parent terms with IC ≥ {icThreshold}. Improves recall for annotation-sparse genes.
-                </div>
-              </div>
-            </label>
-
-            {expandIC && (
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 }}>
-                  IC threshold: {icThreshold.toFixed(1)}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <label
+                style={{
+                  display: "block",
+                  padding: "10px 12px",
+                  background: surfaceAlt,
+                  border: `1px dashed ${C.borderEmphasis}`,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>VariMAT file (.txt / .tsv, up to 500MB)</div>
+                <div style={{ color: C.textMuted, wordBreak: "break-all", overflowWrap: "anywhere" }}>
+                  {fileName || "Click to choose a file…"}
                 </div>
                 <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".txt,.tsv,text/tab-separated-values,text/plain"
+                  onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")}
+                  style={{ display: "none" }}
+                />
+              </label>
+
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 }}>Max ranked genes</div>
+                <input
                   type="range"
-                  min={1.0}
-                  max={5.0}
-                  step={0.5}
-                  value={icThreshold}
-                  onChange={(e) => setIcThreshold(+e.target.value)}
+                  min={5}
+                  max={1000}
+                  step={5}
+                  value={topN}
+                  onChange={(e) => setTopN(+e.target.value)}
                   style={{ width: "100%" }}
                 />
+                <div style={{ fontSize: 11, color: C.textMuted }}>Top {topN}</div>
               </div>
-            )}
 
-            <CTA onClick={handleRun} disabled={mut.isPending || !terms.trim() || !fileName}>
-              {runLabel}
-            </CTA>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  background: surfaceAlt,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                }}
+              >
+                <input type="checkbox" checked={expandIC} onChange={(e) => setExpandIC(e.target.checked)} />
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>IC-filtered term expansion</div>
+                  <div style={{ fontSize: 10, color: C.textMuted }}>
+                    Adds parent terms with IC ≥ {icThreshold}. Improves recall for annotation-sparse genes.
+                  </div>
+                </div>
+              </label>
+
+              {expandIC && (
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 }}>
+                    IC threshold: {icThreshold.toFixed(1)}
+                  </div>
+                  <input
+                    type="range"
+                    min={1.0}
+                    max={5.0}
+                    step={0.5}
+                    value={icThreshold}
+                    onChange={(e) => setIcThreshold(+e.target.value)}
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              )}
+
+              <CTA onClick={handleRun} disabled={mut.isPending || !terms.trim() || !fileName}>
+                {runLabel}
+              </CTA>
+            </div>
           </div>
-        </div>
       </Card>
 
       {mut.isError && (
@@ -511,6 +589,25 @@ export default function VariantFilePrioritization() {
               {data.unresolved_genes.length} gene symbol(s) from the file were not found in the ontology:{" "}
               {data.unresolved_genes.slice(0, 10).join(", ")}
               {data.unresolved_genes.length > 10 && ` · +${data.unresolved_genes.length - 10} more`}
+            </div>
+          )}
+
+          {data.file_summary.variants_dropped_no_canonical_transcript > 0 && (
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                marginBottom: 8,
+                fontSize: 13,
+                background: accentSoft,
+                border: `1px solid ${blueBorder}`,
+                color: C.textSecondary,
+              }}
+            >
+              <strong>ℹ </strong>
+              {data.file_summary.variants_dropped_no_canonical_transcript} variant(s) had transcript annotations in
+              the file but none flagged MANE/canonical, so no reliable single annotation could be chosen — excluded
+              rather than guessed at.
             </div>
           )}
 
