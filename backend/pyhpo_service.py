@@ -1574,14 +1574,13 @@ def _inheritance_flag(gene_row: dict) -> str | None:
         zyg = (v.get("zygosity") or "").lower()
         af = v.get("gnomad_af")
 
-        if "AR" in mode and "AD" not in mode and zyg == "heterozygous":
-            return "AR_SINGLE_HET"
-
         try:
             if af is not None and float(af) > 0.01:
                 return "HIGH_AF_VARIANT"
         except (TypeError, ValueError):
             pass
+        if "AR" in mode and "AD" not in mode and zyg == "heterozygous":
+            return "AR_SINGLE_HET"
 
     # Clean fit
     for v in variants:
