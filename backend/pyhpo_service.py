@@ -1440,6 +1440,159 @@ def _open_varimat_lines(path: str):
     return _SizeLimitedLines(fh, _MAX_DECOMPRESSED_BYTES), fh
 
 
+COMPOSITE_RANKING_ENABLED = True
+
+
+def _pathogenicity_weight(classification: str) -> float:
+    mapping = {
+        "pathogenic": 1.0,
+        "likely pathogenic": 0.85,
+        "uncertain significance": 0.3,
+        "vus": 0.3,
+        "likely benign": 0.05,
+        "benign": 0.0,
+    }
+    return mapping.get((classification or "").strip().lower(), 0.3)
+
+
+def _inheritance_weight(inheritance_mode: str, zygosity: str) -> float:
+    """
+    Key fix: AR genes with a single heterozygous hit get 0.2 penalty.
+    This stops VUS/intronic AR+het variants from outranking
+    Pathogenic homozygous hits purely on HPO score.
+    """
+    mode = (inheritance_mode or "").upper()
+    zyg = (zygosity or "").lower()
+
+    has_ar = "AR" in mode
+    has_ad = "AD" in mode
+    has_xl = any(x in mode for x in ("XLD", "XLR", "XL"))
+
+    if has_ar and not has_ad:
+        # Purely recessive
+        if zyg == "homozygous":
+            return 1.0
+        if "compound" in zyg:
+            return 1.0
+        if zyg == "heterozygous":
+            return 0.2
+        return 0.4
+
+    if has_ad and has_ar:
+        # Mixed (AD_AR, AD_DD_AR)
+        return 0.7 if zyg == "heterozygous" else 0.5
+
+    if has_ad and not has_ar:
+        # Purely dominant (AD, AD_DD)
+        return 1.0 if zyg == "heterozygous" else 0.5
+
+    if has_xl:
+        if "hemizygous" in zyg:
+            return 1.0
+        if zyg == "heterozygous":
+            return 0.5
+        return 0.5
+
+    return 0.5  # unknown / missing / empty
+
+
+def _frequency_weight(gnomad_af) -> float:
+    try:
+        af = float(gnomad_af) if gnomad_af is not None else 0.0
+    except (TypeError, ValueError):
+        af = 0.0
+    if af == 0.0:
+        return 1.0
+    if af < 0.0001:
+        return 0.9
+    if af < 0.001:
+        return 0.7
+    if af < 0.005:
+        return 0.5
+    if af < 0.01:
+        return 0.3
+    return 0.1
+
+
+def _composite_score(gene_row: dict) -> float:
+    """
+    composite = combined_score
+                × best pathogenicity weight across variants
+                × best inheritance weight across variants
+                × worst frequency weight across variants
+
+    Uses candidate_variants[].classification, .zygosity,
+    .inheritance_mode, .gnomad_af — all confirmed present
+    from _build_variant_record().
+
+    Falls back to combined_score if no variants present.
+    """
+    variants = gene_row.get("candidate_variants") or []
+    if not variants:
+        return gene_row.get("combined_score", 0.0)
+
+    p_weights = [_pathogenicity_weight(v.get("classification", "")) for v in variants]
+    i_weights = [
+        _inheritance_weight(v.get("inheritance_mode", ""), v.get("zygosity", ""))
+        for v in variants
+    ]
+    f_weights = [_frequency_weight(v.get("gnomad_af")) for v in variants]
+
+    return (
+        gene_row.get("combined_score", 0.0)
+        * max(p_weights)
+        * max(i_weights)
+        * min(f_weights)
+    )
+
+
+def _inheritance_flag(gene_row: dict) -> str | None:
+    """
+    Discrete flag for frontend badge rendering.
+    Reads from candidate_variants[].classification, .zygosity,
+    .inheritance_mode, .gnomad_af — all from _build_variant_record().
+    Evaluated in priority order: positive signals first, warnings second.
+    """
+    variants = gene_row.get("candidate_variants") or []
+    if not variants:
+        return None
+
+    # Positive signals — check first
+    for v in variants:
+        cls = (v.get("classification") or "").lower()
+        zyg = (v.get("zygosity") or "").lower()
+        is_plp = cls in ("pathogenic", "likely pathogenic")
+
+        if is_plp and zyg == "homozygous":
+            return "PATHOGENIC_HOM"
+        if is_plp and "compound" in zyg:
+            return "PATHOGENIC_COMPHET"
+
+    # Warning signals
+    for v in variants:
+        mode = (v.get("inheritance_mode") or "").upper()
+        zyg = (v.get("zygosity") or "").lower()
+        af = v.get("gnomad_af")
+
+        if "AR" in mode and "AD" not in mode and zyg == "heterozygous":
+            return "AR_SINGLE_HET"
+
+        try:
+            if af is not None and float(af) > 0.01:
+                return "HIGH_AF_VARIANT"
+        except (TypeError, ValueError):
+            pass
+
+    # Clean fit
+    for v in variants:
+        mode = (v.get("inheritance_mode") or "").upper()
+        zyg = (v.get("zygosity") or "").lower()
+        if mode == "AD" and zyg == "heterozygous":
+            return "AD_FIT"
+
+    return None
+
+
 def variant_prioritization_from_file(
     queries: list[str],
     varimat_path: str,
@@ -1559,6 +1712,51 @@ def variant_prioritization_from_file(
             low_quality_only.append(row)
         else:
             ruled_out.append(row)
+
+    if COMPOSITE_RANKING_ENABLED:
+        for r in candidates:
+            r["composite_score"] = round(_composite_score(r), 6)
+
+            # Rank breakdown — pick the best variant for display
+            variants = r.get("candidate_variants") or []
+            if variants:
+                best_v = max(
+                    variants,
+                    key=lambda v: (
+                        _pathogenicity_weight(v.get("classification", ""))
+                        * _inheritance_weight(v.get("inheritance_mode", ""), v.get("zygosity", ""))
+                    ),
+                )
+                r["rank_breakdown"] = {
+                    "hpo_combined_score": r.get("combined_score"),
+                    "pathogenicity_weight": round(
+                        _pathogenicity_weight(best_v.get("classification", "")), 3
+                    ),
+                    "inheritance_weight": round(
+                        _inheritance_weight(
+                            best_v.get("inheritance_mode", ""),
+                            best_v.get("zygosity", ""),
+                        ),
+                        3,
+                    ),
+                    "frequency_weight": round(
+                        _frequency_weight(best_v.get("gnomad_af")), 3
+                    ),
+                }
+            else:
+                r["rank_breakdown"] = {
+                    "hpo_combined_score": r.get("combined_score"),
+                }
+
+        for r in candidates:
+            r["inheritance_flag"] = _inheritance_flag(r)
+
+        candidates.sort(
+            key=lambda x: (
+                -x.get("composite_score", 0.0),
+                -x.get("combined_score", 0.0),
+            )
+        )
 
     for i, r in enumerate(candidates):
         r["rank"] = i + 1
