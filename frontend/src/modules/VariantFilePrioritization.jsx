@@ -277,11 +277,33 @@ function GeneCard({ row, tone = "candidate" }) {
       <WarningBanner text={row.quality_warning} tone="red" />
       <WarningBanner text={row.zygosity_warning} tone="amber" />
 
-      {bd && (
+      {bd && bd.confirmed && (
         <div style={{ marginBottom: 6, fontSize: 12 }}>
           <span style={{ color: C.textMuted }}>Best patient match: </span>
           <span style={{ color: C.accent, fontWeight: 500 }}>{bd.disease_name}</span>
           <span style={{ color: C.textMuted }}> · Dis #{bd.disease_rank} · causal overlap {(bd.causal_overlap * 100).toFixed(0)}%</span>
+        </div>
+      )}
+
+      {bd && !bd.confirmed && (
+        <div
+          style={{
+            marginBottom: 8,
+            padding: "6px 10px",
+            borderRadius: 6,
+            background: amberSoft,
+            border: `1px solid ${C.amber}`,
+            fontSize: 12,
+          }}
+        >
+          <span style={{ color: C.amber, fontWeight: 600 }}>Possible match, not confirmed: </span>
+          <span style={{ color: C.text }}>{bd.disease_name}</span>
+          <span style={{ color: C.textMuted }}> · phenotype overlap {(bd.causal_overlap * 100).toFixed(0)}%</span>
+          <div style={{ color: C.textMuted, marginTop: 2 }}>
+            This gene is not listed as a known cause of this disease in HPO's own gene-disease record — it
+            surfaced only because the gene's overall phenotype profile overlaps this disease's terms. Could be a
+            real but not-yet-catalogued association, or coincidental similarity to an unrelated disorder.
+          </div>
         </div>
       )}
 

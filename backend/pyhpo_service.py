@@ -1071,6 +1071,13 @@ def _find_bridge_disease(
                     "disease_rank": dr["rank"],
                     "disease_score": dr["combined_score"],
                     "causal_overlap": round(causal, 3),
+                    # This is a phenotype-similarity guess, not a confirmed gene-disease
+                    # relationship -- the gene is NOT necessarily known to cause this
+                    # disease. It surfaced only because this gene had no direct OMIM
+                    # disease with any phenotype overlap for this patient (see
+                    # _bridge_disease_for). Callers must not present this with the same
+                    # confidence as a confirmed match.
+                    "confirmed": False,
                 }
             )
 
@@ -1107,6 +1114,10 @@ def _bridge_disease_for(gr: dict[str, Any], disease_results_full: list[dict[str,
             "disease_rank": match["rank"] if match else None,
             "disease_score": match["combined_score"] if match else None,
             "causal_overlap": disambiguated["causal_overlap"],
+            # Ground truth: this disease is directly listed as one of the gene's own
+            # OMIM diseases (genes_to_phenotype.txt), picked because it best matches
+            # this patient among the gene's confirmed diseases.
+            "confirmed": True,
         }
     return _find_bridge_disease(gr["name"], disease_results_full)
 
