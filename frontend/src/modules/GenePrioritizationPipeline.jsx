@@ -103,7 +103,7 @@ function GeneSearchResultCard({ gene, patientTermCount, C: tk }) {
         ))}
       </div>
 
-      {bd && bd.confirmed && (
+      {bd && (
         <div style={{ marginBottom: 6, fontSize: 12 }}>
           <span style={{ color: tk.textMuted }}>Best patient match: </span>
           <span style={{ color: tk.accent, fontWeight: 500 }}>{bd.disease_name}</span>
@@ -111,26 +111,6 @@ function GeneSearchResultCard({ gene, patientTermCount, C: tk }) {
             {" "}
             · Gene #{gene.rank} · Dis #{bd.disease_rank}
           </span>
-        </div>
-      )}
-
-      {bd && !bd.confirmed && (
-        <div
-          style={{
-            marginBottom: 8,
-            padding: "6px 10px",
-            borderRadius: 6,
-            background: amberSoft,
-            border: `1px solid ${tk.amber}`,
-            fontSize: 12,
-          }}
-        >
-          <span style={{ color: tk.amber, fontWeight: 600 }}>Possible match, not confirmed: </span>
-          <span style={{ color: tk.text }}>{bd.disease_name}</span>
-          <span style={{ color: tk.textMuted }}> · phenotype overlap {(bd.causal_overlap * 100).toFixed(0)}%</span>
-          <div style={{ color: tk.textMuted, marginTop: 2 }}>
-            This gene is not listed as a known cause of this disease in HPO's own gene-disease record.
-          </div>
         </div>
       )}
 
@@ -529,17 +509,7 @@ function DualRankingTable({ genes }) {
               <div style={{ fontSize: 11, lineHeight: 1.4 }}>
                 {g.bridge_disease ? (
                   <>
-                    <div
-                      style={{
-                        color: g.bridge_disease.confirmed ? C.accent : C.amber,
-                        fontWeight: 600,
-                        fontSize: 10,
-                      }}
-                      title={g.bridge_disease.confirmed ? undefined : "Not confirmed as a known gene-disease relationship"}
-                    >
-                      {!g.bridge_disease.confirmed && "? "}
-                      {dnShort}
-                    </div>
+                    <div style={{ color: C.accent, fontWeight: 600, fontSize: 10 }}>{dnShort}</div>
                     <div style={{ color: C.textMuted }}>
                       Gene #{g.rank} · Dis #{g.bridge_disease.disease_rank}
                     </div>
@@ -604,7 +574,7 @@ function DualRankingTable({ genes }) {
                   ))}
                 </div>
 
-                {g.bridge_disease && g.bridge_disease.confirmed && (
+                {g.bridge_disease && (
                   <div
                     style={{
                       padding: "8px 12px",
@@ -627,30 +597,6 @@ function DualRankingTable({ genes }) {
                         the more reliable signal for this candidate.
                       </div>
                     )}
-                  </div>
-                )}
-
-                {g.bridge_disease && !g.bridge_disease.confirmed && (
-                  <div
-                    style={{
-                      padding: "8px 12px",
-                      background: amberSoft,
-                      border: `1px solid ${C.amber}`,
-                      borderRadius: 8,
-                      fontSize: 12,
-                      marginBottom: g.omim_phenotypes?.length > 0 ? 8 : 0,
-                    }}
-                  >
-                    <span style={{ fontWeight: 600, color: C.amber }}>Possible match, not confirmed: </span>
-                    <span style={{ color: C.text }}>{g.bridge_disease.disease_name}</span>
-                    {" · "}
-                    <span style={{ color: C.textMuted }}>
-                      phenotype overlap {(g.bridge_disease.causal_overlap * 100).toFixed(0)}%
-                    </span>
-                    <div style={{ marginTop: 4, color: C.textMuted, fontSize: 11 }}>
-                      This gene is not listed as a known cause of this disease in HPO's own gene-disease record —
-                      it surfaced only because the gene's overall phenotype profile overlaps this disease's terms.
-                    </div>
                   </div>
                 )}
 

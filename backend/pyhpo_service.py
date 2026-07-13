@@ -879,10 +879,9 @@ def _score_catalog(
     against each of its diseases' own HPO set individually, keeping the best
     match. The winning disease is attached as ``_disambiguated_disease``
     (id/name/causal_overlap) so callers can use it as the authoritative
-    "best patient match" instead of the separate causal-overlap heuristic in
-    :func:`_find_bridge_disease`. Entities with no OMIM mapping (e.g.
-    Orpha-only genes) fall back to the original blended-annotation scoring,
-    unchanged.
+    "best patient match" (see :func:`_bridge_disease_for`). Entities with no
+    OMIM mapping (e.g. Orpha-only genes) fall back to the original
+    blended-annotation scoring, unchanged.
     """
     from pyhpo.annotations import Omim
 
@@ -960,11 +959,10 @@ def _gene_omim_map() -> dict[str, set[int]]:
     Ontology (it only keeps HPO term associations), so it isn't available
     anywhere else and has to be read directly from the same data file.
 
-    Not to be confused with :func:`_find_bridge_disease`, which picks
-    whichever of a gene's diseases best matches *this patient's* HPO
-    profile -- useful for genes that cause several diseases, but it can
-    surface a different (related but non-canonical) OMIM entry than the
-    gene's actual direct annotation. Both are useful and shown together.
+    Not to be confused with :func:`_bridge_disease_for`, which picks whichever
+    of *this specific gene's own* diseases (from this same mapping) best
+    matches this patient's HPO profile -- useful for genes that cause several
+    diseases. Both are useful and shown together.
     """
     import csv
     import os
@@ -1014,112 +1012,36 @@ def gene_omim_phenotypes(gene_name: str) -> list[dict[str, Any]]:
     return sorted(results, key=lambda d: d["name"])
 
 
-def _find_bridge_disease(
-    gene_name: str,
-    disease_results: list[dict[str, Any]],
-    min_causal_overlap: float = 0.30,
-) -> dict[str, Any] | None:
-    """
-    Find the disease this gene most specifically causes that also matches
-    the patient's phenotype profile.
-
-    Algorithm:
-      1. For each disease in disease_results, compute causal_overlap:
-             causal_overlap = len(gene.hpo & disease.hpo) / len(disease.hpo)
-         This is "what fraction of the disease's phenotypes does this gene cover?"
-         A gene that causes a disease typically covers 50–100% of its HPO terms.
-
-      2. Keep diseases where causal_overlap >= min_causal_overlap (default 0.30).
-
-      3. Sort by causal_overlap DESC, then patient score DESC.
-         → Each gene gets its OWN most-specific disease, not just the top
-           patient-scoring disease (which would be the same for all genes
-           in a gene-panel disease like Noonan syndrome).
-
-    Why not sort by patient score first:
-      All Noonan genes have the same top patient-scoring disease (Noonan syndrome 8
-      or whichever Noonan subtype happens to score highest). Sorting by causal_overlap
-      first ensures RAF1 gets Noonan syndrome 5, PTPN11 gets Leopard syndrome 1, etc.
-
-    Searches within disease_results[:200] for speed. If disease_results was
-    generated with top_n < 200, searches the full list regardless.
-    """
-    try:
-        from pyhpo.annotations import Gene as GeneAnnot
-
-        gene_obj = GeneAnnot.get(gene_name)
-        gene_hpo = gene_obj.hpo  # set of integer HPO indices
-    except Exception:
-        return None
-
-    search_pool = disease_results[:200] if len(disease_results) > 200 else disease_results
-
-    candidates = []
-    for dr in search_pool:
-        d_hpo = dr.get("_hpo_indices")
-        if not d_hpo:
-            continue
-        n_dis = len(d_hpo)
-        if n_dis == 0:
-            continue
-        causal = len(gene_hpo & d_hpo) / n_dis
-        if causal >= min_causal_overlap:
-            candidates.append(
-                {
-                    "disease_name": dr["name"],
-                    "disease_id": dr["id"],
-                    "disease_rank": dr["rank"],
-                    "disease_score": dr["combined_score"],
-                    "causal_overlap": round(causal, 3),
-                    # This is a phenotype-similarity guess, not a confirmed gene-disease
-                    # relationship -- the gene is NOT necessarily known to cause this
-                    # disease. It surfaced only because this gene had no direct OMIM
-                    # disease with any phenotype overlap for this patient (see
-                    # _bridge_disease_for). Callers must not present this with the same
-                    # confidence as a confirmed match.
-                    "confirmed": False,
-                }
-            )
-
-    if not candidates:
-        return None
-
-    return sorted(
-        candidates,
-        key=lambda x: (-x["causal_overlap"], -x["disease_score"]),
-    )[0]
-
-
 def _bridge_disease_for(gr: dict[str, Any], disease_results_full: list[dict[str, Any]]) -> "dict[str, Any] | None":
     """
-    Prefer the disease found during per-disease gene scoring (see
-    _score_catalog's disambiguate_genes) over the causal-overlap heuristic in
-    _find_bridge_disease. The disambiguated disease is guaranteed to be one of
-    the gene's own OMIM diseases (ground truth from HPO's gene-disease file)
-    and is picked specifically because it best matches this patient -- unlike
-    the heuristic, which searches an independently-ranked disease list for
-    term overlap and can surface a phenotypically-similar but not actually
-    gene-caused disease (e.g. AGRN used to bridge to PREPL's own disease,
-    since both are congenital myasthenic syndromes with overlapping terms).
+    The disease found during per-disease gene scoring (see _score_catalog's
+    disambiguate_genes), if any -- guaranteed to be one of the gene's own
+    OMIM diseases (ground truth from HPO's gene-disease file), picked because
+    it best matches this patient among the gene's confirmed diseases.
 
-    Falls back to the heuristic only for genes with no direct OMIM mapping at
-    all (e.g. Orpha-only genes), where there's no ground truth to disambiguate.
+    Returns None -- not a guess -- when no such match exists (the gene has no
+    direct OMIM mapping, or none of its listed diseases have any phenotype
+    overlap with this patient). An earlier version fell back to a
+    causal-overlap heuristic that searched the independently-ranked disease
+    list for *any* disease with term overlap against the gene's blended
+    annotation profile, regardless of whether the gene is actually known to
+    cause it. That surfaced real mismatches (AGRN bridging to PREPL's own
+    disease; PURA bridging to an unrelated neurodevelopmental disorder it has
+    no confirmed association with) -- a plausible-looking wrong disease name
+    is worse than no disease name for a diagnostic tool, caveat or not. The
+    gene's actual disease record is still available via omim_phenotypes.
     """
     disambiguated = gr.get("_disambiguated_disease")
-    if disambiguated is not None:
-        match = next((d for d in disease_results_full if d["id"] == str(disambiguated["id"])), None)
-        return {
-            "disease_name": disambiguated["name"],
-            "disease_id": str(disambiguated["id"]),
-            "disease_rank": match["rank"] if match else None,
-            "disease_score": match["combined_score"] if match else None,
-            "causal_overlap": disambiguated["causal_overlap"],
-            # Ground truth: this disease is directly listed as one of the gene's own
-            # OMIM diseases (genes_to_phenotype.txt), picked because it best matches
-            # this patient among the gene's confirmed diseases.
-            "confirmed": True,
-        }
-    return _find_bridge_disease(gr["name"], disease_results_full)
+    if disambiguated is None:
+        return None
+    match = next((d for d in disease_results_full if d["id"] == str(disambiguated["id"])), None)
+    return {
+        "disease_name": disambiguated["name"],
+        "disease_id": str(disambiguated["id"]),
+        "disease_rank": match["rank"] if match else None,
+        "disease_score": match["combined_score"] if match else None,
+        "causal_overlap": disambiguated["causal_overlap"],
+    }
 
 
 def gene_prioritization_pipeline(
@@ -1540,7 +1462,7 @@ def variant_prioritization_from_file(
     similarity (reusing :func:`_score_catalog`, same as the gene
     prioritization pipeline). Each ranked gene is annotated with its
     Pathogenic/Likely Pathogenic variants from the file (VUS as fallback if
-    none), plus a bridge disease via :func:`_find_bridge_disease`.
+    none), plus a bridge disease via :func:`_bridge_disease_for`.
 
     Three result buckets, so nothing with a clinically relevant classification
     is silently dropped:
