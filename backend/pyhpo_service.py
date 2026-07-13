@@ -793,6 +793,69 @@ def _expand_with_ic_filter(
     return HPOSet(list(expanded)), added_terms
 
 
+def _score_one_entity(
+    hposet: Any,
+    patient_indices: set[int],
+    n_patient: int,
+    patient_ic_total: float,
+    patient_by_idx: dict[int, Any],
+    entity_name: str,
+    entity_id: str,
+    entity_indices: set[int],
+    *,
+    kind: str,
+    method: str,
+) -> "dict[str, Any] | None":
+    """
+    Score a patient HPOSet against one phenotype-annotation set (``entity_indices``).
+    ``entity_name``/``entity_id`` are carried through as-is on the result -- the
+    caller decides whose identity they represent (e.g. scoring a gene against
+    one of *its* specific OMIM diseases' HPO set still returns a row identified
+    by the gene, not the disease). Returns None if there's no overlap at all.
+    """
+    from pyhpo import HPOSet, Ontology
+
+    matched = patient_indices & entity_indices
+    if not matched:
+        return None
+
+    overlap = len(matched)
+    fwd_cov = overlap / n_patient
+    ic_sum = sum(float(patient_by_idx[idx].information_content.omim) for idx in matched)
+    ic_cov = ic_sum / patient_ic_total if patient_ic_total > 0 else 0.0
+    rev_cov = overlap / len(entity_indices) if entity_indices else 0.0
+
+    try:
+        entity_terms = [Ontology[idx] for idx in entity_indices]
+        entity_hposet = HPOSet(entity_terms)
+        sim = _ic_weighted_one_way_sim(hposet, entity_hposet, kind=kind, method=method)
+    except Exception:
+        sim = 0.0
+
+    combined = 0.45 * sim + 0.30 * ic_cov + 0.15 * fwd_cov + 0.10 * rev_cov
+
+    return {
+        "name": entity_name,
+        "id": entity_id,
+        "combined_score": round(combined, 4),
+        "similarity": round(sim, 4),
+        "ic_weighted_coverage": round(ic_cov, 4),
+        "coverage": round(fwd_cov, 4),
+        "rev_coverage": round(rev_cov, 4),
+        "overlap": overlap,
+        "total_annotations": len(entity_indices),
+        "matched_terms": [
+            {
+                "id": patient_by_idx[idx].id,
+                "name": patient_by_idx[idx].name,
+                "ic": round(float(patient_by_idx[idx].information_content.omim), 3),
+            }
+            for idx in sorted(matched)
+        ],
+        "_hpo_indices": entity_indices,
+    }
+
+
 def _score_catalog(
     hposet: Any,
     catalog: Any,
@@ -800,13 +863,28 @@ def _score_catalog(
     *,
     kind: str = "omim",
     method: str = "resnik",
+    disambiguate_genes: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Score a full catalog (genes or diseases) against a patient HPOSet.
     Returns every scored entity, sorted by combined score, with ``rank`` set on each row.
     ``top_n`` is ignored for slicing; callers slice with ``[:top_n]`` when needed.
+
+    disambiguate_genes: when scoring a gene catalog, ~27% of genes cause more
+    than one OMIM disease. Scoring against the gene's blended annotation set
+    (the union of every phenotype ever linked to it, across all its diseases)
+    dilutes the signal for these genes -- a strong match to one specific
+    disease gets averaged down by an unrelated one. When True, any entity
+    with a direct OMIM mapping (see :func:`_gene_omim_map`) is instead scored
+    against each of its diseases' own HPO set individually, keeping the best
+    match. The winning disease is attached as ``_disambiguated_disease``
+    (id/name/causal_overlap) so callers can use it as the authoritative
+    "best patient match" instead of the separate causal-overlap heuristic in
+    :func:`_find_bridge_disease`. Entities with no OMIM mapping (e.g.
+    Orpha-only genes) fall back to the original blended-annotation scoring,
+    unchanged.
     """
-    from pyhpo import HPOSet, Ontology
+    from pyhpo.annotations import Omim
 
     patient_indices = {int(t.id.replace("HP:", "")) for t in hposet}
     n_patient = len(hposet)
@@ -815,50 +893,46 @@ def _score_catalog(
 
     results: list[dict[str, Any]] = []
     for entity in catalog:
-        entity_indices = entity.hpo
-        matched = patient_indices & entity_indices
-        if not matched:
-            continue
+        entity_name = getattr(entity, "name", str(entity))
+        entity_id = str(getattr(entity, "id", ""))
+        row = None
 
-        overlap = len(matched)
-        fwd_cov = overlap / n_patient
-        ic_sum = sum(
-            float(patient_by_idx[idx].information_content.omim) for idx in matched
-        )
-        ic_cov = ic_sum / patient_ic_total if patient_ic_total > 0 else 0.0
-        rev_cov = overlap / len(entity_indices) if entity_indices else 0.0
-
-        try:
-            entity_terms = [Ontology[idx] for idx in entity_indices]
-            entity_hposet = HPOSet(entity_terms)
-            sim = _ic_weighted_one_way_sim(hposet, entity_hposet, kind=kind, method=method)
-        except Exception:
-            sim = 0.0
-
-        combined = 0.45 * sim + 0.30 * ic_cov + 0.15 * fwd_cov + 0.10 * rev_cov
-
-        results.append(
-            {
-                "name": getattr(entity, "name", str(entity)),
-                "id": str(getattr(entity, "id", "")),
-                "combined_score": round(combined, 4),
-                "similarity": round(sim, 4),
-                "ic_weighted_coverage": round(ic_cov, 4),
-                "coverage": round(fwd_cov, 4),
-                "rev_coverage": round(rev_cov, 4),
-                "overlap": overlap,
-                "total_annotations": len(entity_indices),
-                "matched_terms": [
-                    {
-                        "id": patient_by_idx[idx].id,
-                        "name": patient_by_idx[idx].name,
-                        "ic": round(float(patient_by_idx[idx].information_content.omim), 3),
+        if disambiguate_genes:
+            omim_ids = _gene_omim_map().get(entity_name.upper())
+            if omim_ids:
+                best = None
+                best_disease = None
+                for omim_id in omim_ids:
+                    try:
+                        disease = Omim.get(omim_id)
+                    except (KeyError, ValueError):
+                        continue
+                    candidate = _score_one_entity(
+                        hposet, patient_indices, n_patient, patient_ic_total, patient_by_idx,
+                        entity_name, entity_id, disease.hpo, kind=kind, method=method,
+                    )
+                    if candidate is not None and (best is None or candidate["combined_score"] > best["combined_score"]):
+                        best = candidate
+                        best_disease = disease
+                if best is not None:
+                    n_disease = len(best_disease.hpo)
+                    best["_disambiguated_disease"] = {
+                        "id": best_disease.id,
+                        "name": best_disease.name,
+                        "causal_overlap": round(
+                            len(entity.hpo & best_disease.hpo) / n_disease if n_disease else 0.0, 3
+                        ),
                     }
-                    for idx in sorted(matched)
-                ],
-                "_hpo_indices": entity_indices,
-            }
-        )
+                    row = best
+
+        if row is None:
+            row = _score_one_entity(
+                hposet, patient_indices, n_patient, patient_ic_total, patient_by_idx,
+                entity_name, entity_id, entity.hpo, kind=kind, method=method,
+            )
+        if row is None:
+            continue
+        results.append(row)
 
     results.sort(
         key=lambda x: (
@@ -873,6 +947,71 @@ def _score_catalog(
         r["rank"] = i + 1
 
     return results
+
+
+@lru_cache(maxsize=1)
+def _gene_omim_map() -> dict[str, set[int]]:
+    """
+    Direct gene -> OMIM disease ID map, parsed straight from HPO's own
+    genes_to_phenotype.txt (the ``disease_id`` column). This is the
+    authoritative "this gene causes this disease" relationship as HPO/OMIM
+    define it -- independent of any patient phenotype. PyHPO's own gene
+    parser (pyhpo/parser/genes.py) discards this column when loading the
+    Ontology (it only keeps HPO term associations), so it isn't available
+    anywhere else and has to be read directly from the same data file.
+
+    Not to be confused with :func:`_find_bridge_disease`, which picks
+    whichever of a gene's diseases best matches *this patient's* HPO
+    profile -- useful for genes that cause several diseases, but it can
+    surface a different (related but non-canonical) OMIM entry than the
+    gene's actual direct annotation. Both are useful and shown together.
+    """
+    import csv
+    import os
+
+    import pyhpo
+
+    data_dir = os.path.join(os.path.dirname(pyhpo.__file__), "data")
+    path = os.path.join(data_dir, "genes_to_phenotype.txt")
+
+    mapping: dict[str, set[int]] = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            reader = csv.reader(fh, delimiter="\t")
+            header = next(reader, None)
+            if not header or "gene_symbol" not in header or "disease_id" not in header:
+                return mapping
+            gene_i = header.index("gene_symbol")
+            disease_i = header.index("disease_id")
+            for row in reader:
+                if len(row) <= max(gene_i, disease_i):
+                    continue
+                disease_id = row[disease_i]
+                if not disease_id.startswith("OMIM:"):
+                    continue
+                try:
+                    omim_id = int(disease_id.split(":", 1)[1])
+                except ValueError:
+                    continue
+                mapping.setdefault(row[gene_i].upper(), set()).add(omim_id)
+    except OSError:
+        return mapping
+    return mapping
+
+
+def gene_omim_phenotypes(gene_name: str) -> list[dict[str, Any]]:
+    """The OMIM disease(s) this gene is directly annotated as causing, per HPO's own database."""
+    from pyhpo.annotations import Omim
+
+    ids = _gene_omim_map().get(gene_name.upper(), set())
+    results = []
+    for omim_id in sorted(ids):
+        try:
+            disease = Omim.get(omim_id)
+        except (KeyError, ValueError):
+            continue
+        results.append({"id": disease.id, "name": disease.name})
+    return sorted(results, key=lambda d: d["name"])
 
 
 def _find_bridge_disease(
@@ -942,6 +1081,34 @@ def _find_bridge_disease(
         candidates,
         key=lambda x: (-x["causal_overlap"], -x["disease_score"]),
     )[0]
+
+
+def _bridge_disease_for(gr: dict[str, Any], disease_results_full: list[dict[str, Any]]) -> "dict[str, Any] | None":
+    """
+    Prefer the disease found during per-disease gene scoring (see
+    _score_catalog's disambiguate_genes) over the causal-overlap heuristic in
+    _find_bridge_disease. The disambiguated disease is guaranteed to be one of
+    the gene's own OMIM diseases (ground truth from HPO's gene-disease file)
+    and is picked specifically because it best matches this patient -- unlike
+    the heuristic, which searches an independently-ranked disease list for
+    term overlap and can surface a phenotypically-similar but not actually
+    gene-caused disease (e.g. AGRN used to bridge to PREPL's own disease,
+    since both are congenital myasthenic syndromes with overlapping terms).
+
+    Falls back to the heuristic only for genes with no direct OMIM mapping at
+    all (e.g. Orpha-only genes), where there's no ground truth to disambiguate.
+    """
+    disambiguated = gr.get("_disambiguated_disease")
+    if disambiguated is not None:
+        match = next((d for d in disease_results_full if d["id"] == str(disambiguated["id"])), None)
+        return {
+            "disease_name": disambiguated["name"],
+            "disease_id": str(disambiguated["id"]),
+            "disease_rank": match["rank"] if match else None,
+            "disease_score": match["combined_score"] if match else None,
+            "causal_overlap": disambiguated["causal_overlap"],
+        }
+    return _find_bridge_disease(gr["name"], disease_results_full)
 
 
 def gene_prioritization_pipeline(
@@ -1020,6 +1187,7 @@ def gene_prioritization_pipeline(
         hposet,
         Ontology.genes,
         top_n=_SEARCH_CAP,
+        disambiguate_genes=True,
     )
     gene_results_full = gene_results_scored[:_SEARCH_CAP]
     gene_results = gene_results_full[:top_n]
@@ -1040,7 +1208,8 @@ def gene_prioritization_pipeline(
         else:
             gr["annotation_warning"] = None
 
-        gr["bridge_disease"] = _find_bridge_disease(gr["name"], disease_results_full)
+        gr["bridge_disease"] = _bridge_disease_for(gr, disease_results_full)
+        gr["omim_phenotypes"] = gene_omim_phenotypes(gr["name"])
 
     def _clean(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
@@ -1070,21 +1239,73 @@ _VARIANT_FALLBACK_TIERS = {2}  # Uncertain Significance
 _RECESSIVE_ONLY_MODES = {"AR"}
 
 
-def _zygosity_warning(candidate_variants: list[dict[str, Any]]) -> "str | None":
+# OMIM disease HPO annotation sets include inheritance-mode terms directly
+# (e.g. HP:0000007 "Autosomal recessive inheritance" is itself one of a
+# disease's annotated terms) -- confirmed by direct inspection, not assumed.
+# This is the authoritative source: the disease's own curated record, not the
+# variant caller's per-variant ACMG tag.
+_INHERITANCE_TERM_LABELS: dict[int, str] = {
+    6: "AD",
+    7: "AR",
+    1417: "XL",
+    1419: "XLR",
+    1423: "XLD",
+    1425: "YL",
+}
+
+
+def _gene_disease_inheritance_modes(gene_name: str) -> "set[str] | None":
+    """
+    Union of OMIM's own recorded inheritance mode(s) across all of this gene's
+    known diseases (see :func:`_gene_omim_map`). Conservative by design: if
+    ANY of the gene's diseases can be inherited dominantly, a lone
+    heterozygous variant can't be ruled out on inheritance grounds alone --
+    regardless of which specific disease this patient's phenotype points to.
+    """
+    from pyhpo.annotations import Omim
+
+    omim_ids = _gene_omim_map().get(gene_name.upper())
+    if not omim_ids:
+        return None
+    modes: set[str] = set()
+    for omim_id in omim_ids:
+        try:
+            disease = Omim.get(omim_id)
+        except (KeyError, ValueError):
+            continue
+        modes |= {label for idx, label in _INHERITANCE_TERM_LABELS.items() if idx in disease.hpo}
+    return modes or None
+
+
+def _zygosity_warning(
+    candidate_variants: list[dict[str, Any]],
+    disease_inheritance_modes: "set[str] | None" = None,
+) -> "str | None":
     """
     Flag genes whose qualifying variant(s) can't structurally explain disease
-    given the file's own declared inheritance mode: a lone heterozygous
-    variant in an autosomal-recessive-only (AR) gene needs a second variant
-    (compound het) or a homozygous call to actually be causal.
+    given the declared inheritance mode: a lone heterozygous variant in an
+    autosomal-recessive-only (AR) gene needs a second variant (compound het)
+    or a homozygous call to actually be causal.
 
     Conservative by design: only warns when *every* candidate variant has a
-    positively-identified AR-only mode. Missing/unknown inheritance, or any
-    AD/AD_AR/XL variant in the mix, means dominant inheritance can't be ruled
-    out, so a single heterozygous hit stays unflagged.
+    positively-identified AR-only mode per the file's own ACMG criteria.
+    Missing/unknown inheritance, or any AD/AD_AR/XL variant in the mix, means
+    dominant inheritance can't be ruled out, so a single heterozygous hit
+    stays unflagged.
+
+    ``disease_inheritance_modes``, when available (the gene's own OMIM
+    disease record -- see :func:`_gene_disease_inheritance_modes`,
+    more authoritative than the variant caller's per-variant tag), is used to
+    veto a false positive: if OMIM says this disease can also be inherited
+    dominantly, the warning does not fire even though the file's own ACMG
+    criteria say AR for this specific variant.
     """
     modes = {v.get("inheritance_mode", "") for v in candidate_variants}
     if not modes or not modes.issubset(_RECESSIVE_ONLY_MODES):
         return None
+
+    if disease_inheritance_modes and not disease_inheritance_modes.issubset(_RECESSIVE_ONLY_MODES):
+        return None  # OMIM's own record says dominant inheritance is also possible for this disease
 
     if any(v.get("zygosity", "").lower() == "homozygous" for v in candidate_variants):
         return None  # a homozygous AR variant is sufficient on its own
@@ -1095,36 +1316,74 @@ def _zygosity_warning(candidate_variants: list[dict[str, Any]]) -> "str | None":
         return None  # >=2 distinct het variants: plausible compound het, not flagged
 
     if len(distinct_variants) == 1:
+        source = (
+            "the associated disease's own OMIM inheritance record and the file's ACMG criteria both mark"
+            if disease_inheritance_modes
+            else "the file's ACMG criteria mark"
+        )
         return (
-            "This gene's only qualifying variant is a single heterozygous hit, but the file's "
-            "ACMG criteria mark this gene's inheritance as recessive-only (AR). A lone "
-            "heterozygous variant cannot by itself explain an autosomal recessive disease — "
-            "a second variant (compound heterozygous) or a homozygous call would be needed."
+            f"This gene's only qualifying variant is a single heterozygous hit, but {source} "
+            "this gene's inheritance as recessive-only (AR). A lone heterozygous variant cannot by "
+            "itself explain an autosomal recessive disease — a second variant (compound heterozygous) "
+            "or a homozygous call would be needed."
         )
     return None
 
 
+def _tier_pick(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prefer Pathogenic/Likely Pathogenic; fall back to VUS if none are P/LP."""
+    primary = [v for v in pool if v["classification_tier"] in _VARIANT_PRIMARY_TIERS]
+    if primary:
+        return primary
+    return [v for v in pool if v["classification_tier"] in _VARIANT_FALLBACK_TIERS]
+
+
 def _select_candidate_variants(
     variants: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """
-    Filter-then-rank: prefer Pathogenic/Likely Pathogenic; fall back to VUS
-    if none are P/LP. Benign/Likely Benign/unclassified are never candidates.
+    Filter-then-rank, QC status first: a flagged call (LowQD/LowCoverage/
+    SnpCluster/...) is never treated as equivalent to a clean PASS call -- the
+    variant caller itself doubts it's real, so it must not compete for rank
+    alongside genuinely clean evidence. A gene whose only qualifying variant
+    is QC-flagged is kept out of the ranked ``candidates`` pool entirely
+    (callers should route it to a separate "low quality only" bucket) rather
+    than letting it dilute/outrank genes with clean support.
 
-    Returns (candidates, everything_else) -- everything_else is reported as
-    "ruled out" rather than dropped, so a benign-only gene stays visible.
+    Within whichever QC pool is used, prefer Pathogenic/Likely Pathogenic;
+    fall back to VUS if none are P/LP. Benign/Likely Benign/unclassified are
+    never candidates.
+
+    Returns (pass_candidates, flagged_candidates, ruled_out) -- exactly one of
+    the first two is non-empty when there's a qualifying variant at all.
+    ``ruled_out`` is reported rather than dropped, so nothing is hidden.
     """
-    primary = [v for v in variants if v["classification_tier"] in _VARIANT_PRIMARY_TIERS]
-    if primary:
-        keep = {id(v) for v in primary}
-        return primary, [v for v in variants if id(v) not in keep]
+    passing_qc = [v for v in variants if v.get("passes_qc")]
+    flagged_qc = [v for v in variants if not v.get("passes_qc")]
 
-    fallback = [v for v in variants if v["classification_tier"] in _VARIANT_FALLBACK_TIERS]
-    if fallback:
-        keep = {id(v) for v in fallback}
-        return fallback, [v for v in variants if id(v) not in keep]
+    pass_candidates = _tier_pick(passing_qc)
+    if pass_candidates:
+        keep = {id(v) for v in pass_candidates}
+        return pass_candidates, [], [v for v in variants if id(v) not in keep]
 
-    return [], list(variants)
+    flagged_candidates = _tier_pick(flagged_qc)
+    if flagged_candidates:
+        keep = {id(v) for v in flagged_candidates}
+        return [], flagged_candidates, [v for v in variants if id(v) not in keep]
+
+    return [], [], list(variants)
+
+
+def _quality_warning(candidate_variants: list[dict[str, Any]]) -> "str | None":
+    """None of the selected candidates passed the variant caller's own QC filter."""
+    if not candidate_variants or any(v.get("passes_qc") for v in candidate_variants):
+        return None
+    tags = sorted({v.get("filter_status") or "unspecified" for v in candidate_variants})
+    return (
+        f"None of this gene's candidate variant(s) passed the file's own quality filter "
+        f"(flagged: {', '.join(tags)}). The call may be a sequencing/alignment artifact rather "
+        "than a real variant -- confirm with raw read data before treating this as a finding."
+    )
 
 
 def _resolve_gene(symbol: str) -> Any | None:
@@ -1180,14 +1439,20 @@ def variant_file_gene_detail(token: str, genes: list[str]) -> dict[str, Any]:
         gene_obj = _resolve_gene(raw_name.strip())
         canonical = gene_obj.name if gene_obj is not None else raw_name.strip().upper()
         variants = variants_by_canonical.get(canonical, [])
-        candidates, ruled_out_variants = _select_candidate_variants(variants)
+        pass_candidates, flagged_candidates, ruled_out_variants = _select_candidate_variants(variants)
         results.append(
             {
                 "name": canonical,
                 "found": bool(variants),
-                "candidate_variants": candidates,
+                "candidate_variants": pass_candidates or flagged_candidates,
                 "ruled_out_variants": ruled_out_variants,
-                "zygosity_warning": _zygosity_warning(candidates) if candidates else None,
+                "zygosity_warning": (
+                    _zygosity_warning(pass_candidates, _gene_disease_inheritance_modes(canonical))
+                    if pass_candidates
+                    else None
+                ),
+                "quality_warning": _quality_warning(flagged_candidates) if flagged_candidates else None,
+                "omim_phenotypes": gene_omim_phenotypes(canonical),
             }
         )
     return {"results": results}
@@ -1322,30 +1587,49 @@ def variant_prioritization_from_file(
         )
 
     resolved_genes = list(resolved_by_name.values())
-    gene_scores = _score_catalog(hposet, resolved_genes, top_n=len(resolved_genes))
+    gene_scores = _score_catalog(hposet, resolved_genes, top_n=len(resolved_genes), disambiguate_genes=True)
     scored_names = {gr["name"] for gr in gene_scores}
 
     disease_results_full = _score_catalog(hposet, Ontology.omim_diseases, top_n=200)
 
     def _attach_variants(gr: dict[str, Any]) -> dict[str, Any]:
         variants = variants_by_canonical.get(gr["name"], [])
-        candidates, ruled_out_variants = _select_candidate_variants(variants)
+        pass_candidates, flagged_candidates, ruled_out_variants = _select_candidate_variants(variants)
+        shown = pass_candidates or flagged_candidates
         row = {k: v for k, v in gr.items() if not k.startswith("_")}
         row["hpo_rank"] = row.pop("rank", None)
-        row["bridge_disease"] = _find_bridge_disease(row["name"], disease_results_full)
-        row["candidate_variants"] = candidates
+        row["bridge_disease"] = _bridge_disease_for(gr, disease_results_full)
+        row["omim_phenotypes"] = gene_omim_phenotypes(row["name"])
+        row["candidate_variants"] = shown
         row["ruled_out_variants"] = ruled_out_variants
-        row["zygosity_warning"] = _zygosity_warning(candidates) if candidates else None
+        row["zygosity_warning"] = (
+            _zygosity_warning(pass_candidates, _gene_disease_inheritance_modes(row["name"]))
+            if pass_candidates
+            else None
+        )
+        row["quality_warning"] = _quality_warning(flagged_candidates) if flagged_candidates else None
+        row["_qc_clean_candidate"] = bool(pass_candidates)
         return row
 
     candidates: list[dict[str, Any]] = []
+    low_quality_only: list[dict[str, Any]] = []
     ruled_out: list[dict[str, Any]] = []
     for gr in gene_scores:
         row = _attach_variants(gr)
-        (candidates if row["candidate_variants"] else ruled_out).append(row)
+        is_qc_clean = row.pop("_qc_clean_candidate")
+        if row["candidate_variants"] and is_qc_clean:
+            candidates.append(row)
+        elif row["candidate_variants"]:
+            # Qualifying variant exists, but only as a QC-flagged (LowQD/LowCoverage/
+            # SnpCluster/...) call -- kept out of the ranked pool entirely so it can't
+            # outrank or dilute genes with a genuinely clean supporting variant.
+            low_quality_only.append(row)
+        else:
+            ruled_out.append(row)
 
     for i, r in enumerate(candidates):
         r["rank"] = i + 1
+    low_quality_only.sort(key=lambda r: -r["combined_score"])
 
     # Genes with a qualifying variant but zero HPO overlap with the (possibly
     # IC-expanded) patient profile: can't be ranked, but a real Pathogenic/VUS
@@ -1357,7 +1641,8 @@ def variant_prioritization_from_file(
     for gene_obj in resolved_genes:
         if gene_obj.name in scored_names:
             continue
-        cand, ro = _select_candidate_variants(variants_by_canonical.get(gene_obj.name, []))
+        pass_cand, flagged_cand, ro = _select_candidate_variants(variants_by_canonical.get(gene_obj.name, []))
+        cand = pass_cand or flagged_cand
         if not cand:
             continue
         no_phenotype_overlap_summary.append(
@@ -1367,7 +1652,8 @@ def variant_prioritization_from_file(
                 "best_classification_tier": cand[0]["classification_tier"],
                 "candidate_variant_count": len(cand),
                 "ruled_out_variant_count": len(ro),
-                "has_zygosity_warning": _zygosity_warning(cand) is not None,
+                "has_zygosity_warning": bool(pass_cand) and _zygosity_warning(pass_cand) is not None,
+                "has_quality_warning": bool(flagged_cand),
             }
         )
     no_phenotype_overlap_summary.sort(key=lambda r: (r["best_classification_tier"], r["name"]))
@@ -1376,6 +1662,7 @@ def variant_prioritization_from_file(
 
     return {
         "candidates": candidates[:top_n],
+        "low_quality_only": low_quality_only,
         "ruled_out": ruled_out,
         "no_phenotype_overlap": {
             "count": len(no_phenotype_overlap_summary),

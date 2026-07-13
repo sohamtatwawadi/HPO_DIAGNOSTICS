@@ -104,13 +104,28 @@ function GeneSearchResultCard({ gene, patientTermCount, C: tk }) {
       </div>
 
       {bd && (
-        <div style={{ marginBottom: 10, fontSize: 12 }}>
-          <span style={{ color: tk.textMuted }}>Bridge disease: </span>
+        <div style={{ marginBottom: 6, fontSize: 12 }}>
+          <span style={{ color: tk.textMuted }}>Best patient match: </span>
           <span style={{ color: tk.accent, fontWeight: 500 }}>{bd.disease_name}</span>
           <span style={{ color: tk.textMuted }}>
             {" "}
             · Gene #{gene.rank} · Dis #{bd.disease_rank}
           </span>
+        </div>
+      )}
+
+      {gene.omim_phenotypes?.length > 0 && (
+        <div style={{ marginBottom: 10, fontSize: 12 }}>
+          <span style={{ color: tk.textMuted }}>
+            OMIM phenotype{gene.omim_phenotypes.length > 1 ? "s" : ""} (gene's own disease record):{" "}
+          </span>
+          {gene.omim_phenotypes.map((p, i) => (
+            <span key={p.id}>
+              <span style={{ color: tk.text }}>{p.name}</span>
+              <span style={{ color: tk.textMuted, fontFamily: tk.fontMono, fontSize: 11 }}> (OMIM:{p.id})</span>
+              {i < gene.omim_phenotypes.length - 1 && <span style={{ color: tk.textMuted }}> · </span>}
+            </span>
+          ))}
         </div>
       )}
 
@@ -356,7 +371,7 @@ function DualRankingTable({ genes }) {
           marginBottom: 4,
         }}
       >
-        {["#", "Gene", "Score", "Coverage", "Overlap", "IC cov", "Annot", "Bridge disease", ""].map((h) => (
+        {["#", "Gene", "Score", "Coverage", "Overlap", "IC cov", "Annot", "Best match", ""].map((h) => (
           <div
             key={h}
             style={{
@@ -567,9 +582,10 @@ function DualRankingTable({ genes }) {
                       border: `1px solid ${blueBorder}`,
                       borderRadius: 8,
                       fontSize: 12,
+                      marginBottom: g.omim_phenotypes?.length > 0 ? 8 : 0,
                     }}
                   >
-                    <span style={{ fontWeight: 600, color: C.text }}>Bridge disease: </span>
+                    <span style={{ fontWeight: 600, color: C.text }}>Best patient match: </span>
                     <span style={{ color: C.accent }}>{g.bridge_disease.disease_name}</span>
                     {" · "}
                     <span style={{ color: C.textMuted }}>
@@ -581,6 +597,21 @@ function DualRankingTable({ genes }) {
                         the more reliable signal for this candidate.
                       </div>
                     )}
+                  </div>
+                )}
+
+                {g.omim_phenotypes?.length > 0 && (
+                  <div style={{ padding: "8px 12px", fontSize: 12 }}>
+                    <span style={{ fontWeight: 600, color: C.text }}>
+                      OMIM phenotype{g.omim_phenotypes.length > 1 ? "s" : ""} (gene's own disease record):{" "}
+                    </span>
+                    {g.omim_phenotypes.map((p, i) => (
+                      <span key={p.id}>
+                        <span style={{ color: C.text }}>{p.name}</span>
+                        <span style={{ color: C.textMuted, fontFamily: C.fontMono, fontSize: 11 }}> (OMIM:{p.id})</span>
+                        {i < g.omim_phenotypes.length - 1 && <span style={{ color: C.textMuted }}> · </span>}
+                      </span>
+                    ))}
                   </div>
                 )}
               </div>

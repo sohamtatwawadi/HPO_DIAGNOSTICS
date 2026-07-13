@@ -34,9 +34,20 @@ function formatMafPercent(af) {
   return `${pct.toPrecision(3)}%`;
 }
 
+/** SpliceAI delta score color: >=0.8 very high precision, >=0.5 high, >=0.2 low-precision hit, else negligible. */
+function spliceaiColor(score) {
+  if (score >= 0.8) return C.red;
+  if (score >= 0.5) return C.amber;
+  if (score >= 0.2) return C.textSecondary;
+  return C.textMuted;
+}
+
 function VariantRow({ v }) {
   const [showCriteria, setShowCriteria] = useState(false);
   const criteriaTokens = v.acmg_criteria ? v.acmg_criteria.split(";").map((c) => c.trim()).filter(Boolean) : [];
+  const polyphen2 = v.polyphen2_prediction && v.polyphen2_prediction !== "NA_NA" ? v.polyphen2_prediction : null;
+  const hasEvidence =
+    v.cadd_phred != null || v.sift_prediction || polyphen2 || v.spliceai_max_score != null || v.clinvar_ids?.length > 0;
 
   return (
     <div style={{ marginBottom: 6 }}>
@@ -47,10 +58,10 @@ function VariantRow({ v }) {
           gap: 10,
           alignItems: "center",
           padding: "8px 10px",
-          borderRadius: showCriteria ? "6px 6px 0 0" : 6,
+          borderRadius: showCriteria || hasEvidence ? "6px 6px 0 0" : 6,
           background: surfaceAlt,
           border: `0.5px solid ${C.border}`,
-          borderBottom: showCriteria ? "none" : `0.5px solid ${C.border}`,
+          borderBottom: showCriteria || hasEvidence ? "none" : `0.5px solid ${C.border}`,
           fontSize: 12,
         }}
       >
@@ -59,7 +70,12 @@ function VariantRow({ v }) {
           {v.aa_change || v.cdna_change || v.hgvsg || "—"}
         </span>
         {v.varclass && <span style={{ color: C.textMuted }}>{v.varclass}</span>}
-        {v.zygosity && <span style={{ color: C.textMuted }}>{v.zygosity}</span>}
+        {v.zygosity && (
+          <span style={{ color: C.textMuted }}>
+            {v.zygosity}
+            {v.vaf != null && <span style={{ fontFamily: C.fontMono }}> (VAF {(v.vaf * 100).toFixed(0)}%)</span>}
+          </span>
+        )}
         {v.inheritance_mode && (
           <span style={{ color: C.textMuted, fontFamily: C.fontMono }} title="Inheritance mode from the file's own ACMG criteria">
             {v.inheritance_mode}
@@ -99,6 +115,64 @@ function VariantRow({ v }) {
           </button>
         )}
       </div>
+
+      {hasEvidence && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 12,
+            padding: "6px 10px",
+            borderRadius: showCriteria ? 0 : "0 0 6px 6px",
+            background: C.pageBg,
+            border: `0.5px solid ${C.border}`,
+            borderTop: "none",
+            borderBottom: showCriteria ? "none" : undefined,
+            fontSize: 11,
+            color: C.textMuted,
+          }}
+        >
+          {v.cadd_phred != null && (
+            <span title="CADD Phred score — >20 top 1% most deleterious, >30 top 0.1%">
+              CADD <span style={{ fontFamily: C.fontMono, color: v.cadd_phred >= 20 ? C.amber : C.textMuted }}>{v.cadd_phred}</span>
+            </span>
+          )}
+          {v.sift_prediction && (
+            <span title="SIFT prediction (D = damaging, T = tolerated)">
+              SIFT <span style={{ fontFamily: C.fontMono }}>{v.sift_prediction}</span>
+            </span>
+          )}
+          {polyphen2 && (
+            <span title="PolyPhen-2 prediction (PrD = probably damaging, PoD = possibly damaging, B = benign)">
+              PolyPhen2 <span style={{ fontFamily: C.fontMono }}>{polyphen2}</span>
+            </span>
+          )}
+          {v.spliceai_max_score != null && (
+            <span title={`SpliceAI raw: ${v.spliceai_raw} (max delta score shown; >=0.5 high precision, >=0.8 very high)`}>
+              SpliceAI <span style={{ fontFamily: C.fontMono, color: spliceaiColor(v.spliceai_max_score) }}>{v.spliceai_max_score}</span>
+            </span>
+          )}
+          {v.clinvar_ids?.length > 0 && (
+            <span>
+              ClinVar:{" "}
+              {v.clinvar_ids.map((id, i) => (
+                <span key={id}>
+                  <a
+                    href={`https://www.ncbi.nlm.nih.gov/clinvar/${id}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: C.accent, fontFamily: C.fontMono }}
+                  >
+                    {id}
+                  </a>
+                  {i < v.clinvar_ids.length - 1 && ", "}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
+
       {showCriteria && criteriaTokens.length > 0 && (
         <div
           style={{
@@ -130,22 +204,31 @@ function VariantRow({ v }) {
           ))}
         </div>
       )}
+
+      {(v.maf_warning || v.vaf_warning) && (
+        <div style={{ marginTop: 4 }}>
+          <WarningBanner text={v.maf_warning} tone="red" />
+          <WarningBanner text={v.vaf_warning} tone="amber" />
+        </div>
+      )}
     </div>
   );
 }
 
-function ZygosityWarning({ text }) {
+function WarningBanner({ text, tone = "amber" }) {
   if (!text) return null;
+  const color = tone === "red" ? C.red : C.amber;
+  const bg = tone === "red" ? "rgba(220, 38, 38, 0.08)" : amberSoft;
   return (
     <div
       style={{
         marginBottom: 10,
         padding: "8px 12px",
-        background: amberSoft,
-        border: `1px solid ${C.amber}`,
+        background: bg,
+        border: `1px solid ${color}`,
         borderRadius: 8,
         fontSize: 12,
-        color: C.amber,
+        color,
       }}
     >
       ⚠ {text}
@@ -158,16 +241,17 @@ function GeneCard({ row, tone = "candidate" }) {
   const bd = row.bridge_disease;
   const isCandidate = tone === "candidate";
   const isRuledOut = tone === "ruled_out";
+  const isLowQualityOnly = tone === "low_quality_only";
 
   return (
     <div
       style={{
         marginBottom: 10,
         background: isCandidate ? C.card : surfaceAlt,
-        border: `0.5px solid ${isRuledOut ? C.border : C.borderEmphasis}`,
+        border: `0.5px solid ${isRuledOut || isLowQualityOnly ? C.border : C.borderEmphasis}`,
         borderRadius: 8,
         padding: "14px 16px",
-        opacity: isRuledOut ? 0.85 : 1,
+        opacity: isRuledOut || isLowQualityOnly ? 0.85 : 1,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
@@ -185,17 +269,34 @@ function GeneCard({ row, tone = "candidate" }) {
           </span>
         )}
         {isRuledOut && <Badge tone="ok">Benign/Likely benign only — ruled out</Badge>}
+        {isLowQualityOnly && <Badge tone="danger">No QC-passing variant — excluded from ranking</Badge>}
         {row.found === false && <Badge tone="warn">Not in this file</Badge>}
         {row.annotation_warning && <Badge tone="warn">Sparse gene annotations</Badge>}
       </div>
 
-      <ZygosityWarning text={row.zygosity_warning} />
+      <WarningBanner text={row.quality_warning} tone="red" />
+      <WarningBanner text={row.zygosity_warning} tone="amber" />
 
       {bd && (
-        <div style={{ marginBottom: 10, fontSize: 12 }}>
-          <span style={{ color: C.textMuted }}>Bridge disease: </span>
+        <div style={{ marginBottom: 6, fontSize: 12 }}>
+          <span style={{ color: C.textMuted }}>Best patient match: </span>
           <span style={{ color: C.accent, fontWeight: 500 }}>{bd.disease_name}</span>
           <span style={{ color: C.textMuted }}> · Dis #{bd.disease_rank} · causal overlap {(bd.causal_overlap * 100).toFixed(0)}%</span>
+        </div>
+      )}
+
+      {row.omim_phenotypes?.length > 0 && (
+        <div style={{ marginBottom: 10, fontSize: 12 }}>
+          <span style={{ color: C.textMuted }}>
+            OMIM phenotype{row.omim_phenotypes.length > 1 ? "s" : ""} (gene's own disease record):{" "}
+          </span>
+          {row.omim_phenotypes.map((p, i) => (
+            <span key={p.id}>
+              <span style={{ color: C.text }}>{p.name}</span>
+              <span style={{ color: C.textMuted, fontFamily: C.fontMono, fontSize: 11 }}> (OMIM:{p.id})</span>
+              {i < row.omim_phenotypes.length - 1 && <span style={{ color: C.textMuted }}> · </span>}
+            </span>
+          ))}
         </div>
       )}
 
@@ -357,6 +458,7 @@ function NoOverlapSummary({ summary, count, onLookup }) {
             {g.name}
             <span style={{ color: C.textMuted }}>({g.best_classification})</span>
             {g.has_zygosity_warning && <span title="Zygosity/inheritance warning">⚠</span>}
+            {g.has_quality_warning && <span title="No QC-passing variant for this gene">🚫</span>}
           </button>
         ))}
       </div>
@@ -675,6 +777,22 @@ export default function VariantFilePrioritization() {
           {data.candidates.map((row) => (
             <GeneCard key={row.name} row={row} tone="candidate" />
           ))}
+
+          {data.low_quality_only?.length > 0 && (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8, marginTop: 18 }}>
+                Excluded from ranking — no QC-passing variant ({data.low_quality_only.length})
+              </div>
+              <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 8 }}>
+                These genes matched the phenotype and have a Pathogenic/Likely Pathogenic/VUS call, but every
+                supporting variant failed the file's own quality filter (LowQD, LowCoverage, SnpCluster, etc.) — kept
+                separate so a caller artifact can't outrank a genuinely clean finding.
+              </div>
+              {data.low_quality_only.map((row) => (
+                <GeneCard key={row.name} row={row} tone="low_quality_only" />
+              ))}
+            </>
+          )}
 
           {data.ruled_out?.length > 0 && (
             <>
