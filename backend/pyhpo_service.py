@@ -1443,8 +1443,14 @@ def _open_varimat_lines(path: str):
 COMPOSITE_RANKING_ENABLED = True
 
 
-def _pathogenicity_weight(classification: str) -> float:
-    mapping = {
+def _pathogenicity_weight(variant: dict) -> float:
+    """
+    Base weight from ACMG classification, boosted by functional evidence.
+    Reads: classification, varclass, cadd_phred, sift_prediction, gnomad_af
+    All field names from _build_variant_record().
+    """
+    classification = (variant.get("classification") or "").strip().lower()
+    base_map = {
         "pathogenic": 1.0,
         "likely pathogenic": 0.85,
         "uncertain significance": 0.3,
@@ -1452,7 +1458,41 @@ def _pathogenicity_weight(classification: str) -> float:
         "likely benign": 0.05,
         "benign": 0.0,
     }
-    return mapping.get((classification or "").strip().lower(), 0.3)
+    base = base_map.get(classification, 0.3)
+
+    # Functional evidence boosts — only apply to VUS
+    if base == 0.3:
+        varclass = (variant.get("varclass") or "").upper()
+
+        # CADD score boost
+        try:
+            cadd = float(variant.get("cadd_phred") or 0)
+        except (TypeError, ValueError):
+            cadd = 0.0
+
+        # SIFT boost
+        sift = (variant.get("sift_prediction") or variant.get("sift") or "").upper()
+        sift_damaging = sift.startswith("D")
+
+        # Consequence boost
+        high_impact = any(
+            x in varclass
+            for x in ("NONSENSE", "FRAMESHIFT", "SPLICE", "STOPGAIN", "STOPLOSS", "MISSENSE")
+        )
+
+        boost = 0.0
+        if cadd >= 25:
+            boost += 0.15
+        elif cadd >= 20:
+            boost += 0.08
+        if sift_damaging:
+            boost += 0.08
+        if high_impact:
+            boost += 0.05
+
+        base = min(base + boost, 0.79)  # cap below LP threshold (0.85)
+
+    return base
 
 
 def _inheritance_weight(inheritance_mode: str, zygosity: str) -> float:
@@ -1514,6 +1554,39 @@ def _frequency_weight(gnomad_af) -> float:
     return 0.1
 
 
+def _disease_relevance_weight(gene_row: dict) -> float:
+    """
+    Genes with no OMIM phenotype records are not established disease genes.
+    Apply a penalty to prevent HPO-annotation noise genes from ranking highly.
+    """
+    omim_phenotypes = gene_row.get("omim_phenotypes") or []
+    bridge = gene_row.get("bridge_disease")
+
+    if omim_phenotypes:
+        return 1.0  # established disease gene
+    if bridge:
+        return 0.8  # has a bridge disease match but no direct OMIM record
+    return 0.5  # no disease association — penalize
+
+
+def _quality_weight(gene_row: dict) -> float:
+    """
+    Penalize genes whose best variant has a quality warning.
+    quality_warning is already set by _attach_variants() when only
+    QC-flagged calls are present. Also check VAF-based artifact warning
+    from the variant's vaf_warning field.
+    """
+    if gene_row.get("quality_warning"):
+        return 0.4
+
+    variants = gene_row.get("candidate_variants") or []
+    for v in variants:
+        if v.get("vaf_warning"):
+            return 0.6  # VAF anomaly (low VAF, possible artifact/mosaic)
+
+    return 1.0
+
+
 def _composite_score(gene_row: dict) -> float:
     """
     composite = combined_score
@@ -1531,7 +1604,7 @@ def _composite_score(gene_row: dict) -> float:
     if not variants:
         return gene_row.get("combined_score", 0.0)
 
-    p_weights = [_pathogenicity_weight(v.get("classification", "")) for v in variants]
+    p_weights = [_pathogenicity_weight(v) for v in variants]
     i_weights = [
         _inheritance_weight(v.get("inheritance_mode", ""), v.get("zygosity", ""))
         for v in variants
@@ -1543,6 +1616,8 @@ def _composite_score(gene_row: dict) -> float:
         * max(p_weights)
         * max(i_weights)
         * min(f_weights)
+        * _disease_relevance_weight(gene_row)
+        * _quality_weight(gene_row)
     )
 
 
@@ -1722,14 +1797,14 @@ def variant_prioritization_from_file(
                 best_v = max(
                     variants,
                     key=lambda v: (
-                        _pathogenicity_weight(v.get("classification", ""))
+                        _pathogenicity_weight(v)
                         * _inheritance_weight(v.get("inheritance_mode", ""), v.get("zygosity", ""))
                     ),
                 )
                 r["rank_breakdown"] = {
                     "hpo_combined_score": r.get("combined_score"),
                     "pathogenicity_weight": round(
-                        _pathogenicity_weight(best_v.get("classification", "")), 3
+                        _pathogenicity_weight(best_v), 3
                     ),
                     "inheritance_weight": round(
                         _inheritance_weight(
