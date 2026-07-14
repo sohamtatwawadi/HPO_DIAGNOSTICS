@@ -1,34 +1,60 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { clearAuthSession, getAuthToken } from "../auth/AuthContext";
 
 const BASE = import.meta.env.VITE_API_URL ?? "";
+
+function authHeaders(extra = {}) {
+  const token = getAuthToken();
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function handleResponse(r) {
+  if (r.status === 401) {
+    clearAuthSession();
+    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      window.location.assign("/login");
+    }
+    throw new Error("Authentication required — please log in again");
+  }
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 async function post(path, body) {
   const r = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return handleResponse(r);
 }
 
 async function get(path, params = {}) {
   const qs = new URLSearchParams(params).toString();
-  const r = await fetch(`${BASE}${path}${qs ? `?${qs}` : ""}`);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const r = await fetch(`${BASE}${path}${qs ? `?${qs}` : ""}`, {
+    headers: authHeaders(),
+  });
+  return handleResponse(r);
 }
 
 async function postForm(path, formData) {
-  const r = await fetch(`${BASE}${path}`, { method: "POST", body: formData });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const r = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: formData,
+  });
+  return handleResponse(r);
 }
 
 async function del(path) {
-  const r = await fetch(`${BASE}${path}`, { method: "DELETE" });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const r = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  return handleResponse(r);
 }
 
 /** Poll a job status endpoint (queued -> running -> done|error) until it settles. */
@@ -193,6 +219,7 @@ export function useVariantPrioritizeFile() {
       expandIc = true,
       icExpansionThreshold = 2.0,
       topN = 100,
+      fileFormat = "auto",
       onStatusChange,
     }) => {
       const fd = new FormData();
@@ -203,6 +230,7 @@ export function useVariantPrioritizeFile() {
       fd.append("expand_ic", String(expandIc));
       fd.append("ic_expansion_threshold", String(icExpansionThreshold));
       fd.append("top_n", String(topN));
+      fd.append("file_format", fileFormat);
       const submitRes = await postForm("/api/variant-prioritize-file", fd);
       onStatusChange?.("queued");
       return pollJob("/api/variant-prioritize-file/status", submitRes.job_id, { onStatusChange });

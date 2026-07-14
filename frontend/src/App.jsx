@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { C } from "./tokens";
 import Sidebar from "./components/Sidebar";
 import { useHealth } from "./hooks/useAPI";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
 import WorkflowView from "./modules/workflow/WorkflowView";
 import DDX from "./modules/DDX";
 import PatientSimilarity from "./modules/PatientSimilarity";
@@ -15,6 +16,7 @@ import ReportBuilder from "./modules/ReportBuilder";
 import GenePrioritizationPipeline from "./modules/GenePrioritizationPipeline";
 import VariantFilePrioritization from "./modules/VariantFilePrioritization";
 import SavedCases from "./modules/SavedCases";
+import Login from "./modules/Login";
 
 function HealthBanner() {
   const q = useHealth();
@@ -42,33 +44,60 @@ function HealthBanner() {
   );
 }
 
+function RequireAuth({ children }) {
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+}
+
+function AppShell() {
+  return (
+    <div style={{ display: "flex", minHeight: "100vh", fontFamily: C.fontUi }}>
+      <Sidebar />
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <HealthBanner />
+        <main style={{ padding: "24px 28px 40px", flex: 1, background: C.pageBg }}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/variant-file-prioritization" replace />} />
+            <Route path="/workflow" element={<WorkflowView />} />
+            <Route path="/ddx" element={<DDX />} />
+            <Route path="/patient-similarity" element={<PatientSimilarity />} />
+            <Route path="/gene-enrichment" element={<GeneEnrichment />} />
+            <Route path="/cohort" element={<CohortAnalysis />} />
+            <Route path="/variant-prioritizer" element={<VariantPrioritizer />} />
+            <Route path="/disease" element={<DiseaseDeepDive />} />
+            <Route path="/term-explorer" element={<HPOTermExplorer />} />
+            <Route path="/ic-profiler" element={<ICProfiler />} />
+            <Route path="/report" element={<ReportBuilder />} />
+            <Route path="/gene-prioritization" element={<GenePrioritizationPipeline />} />
+            <Route path="/variant-file-prioritization" element={<VariantFilePrioritization />} />
+            <Route path="/saved-cases" element={<SavedCases />} />
+            <Route path="*" element={<Navigate to="/variant-file-prioritization" replace />} />
+          </Routes>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   return (
-    <BrowserRouter>
-      <div style={{ display: "flex", minHeight: "100vh", fontFamily: C.fontUi }}>
-        <Sidebar />
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <HealthBanner />
-          <main style={{ padding: "24px 28px 40px", flex: 1, background: C.pageBg }}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/variant-file-prioritization" replace />} />
-              <Route path="/workflow" element={<WorkflowView />} />
-              <Route path="/ddx" element={<DDX />} />
-              <Route path="/patient-similarity" element={<PatientSimilarity />} />
-              <Route path="/gene-enrichment" element={<GeneEnrichment />} />
-              <Route path="/cohort" element={<CohortAnalysis />} />
-              <Route path="/variant-prioritizer" element={<VariantPrioritizer />} />
-              <Route path="/disease" element={<DiseaseDeepDive />} />
-              <Route path="/term-explorer" element={<HPOTermExplorer />} />
-              <Route path="/ic-profiler" element={<ICProfiler />} />
-              <Route path="/report" element={<ReportBuilder />} />
-              <Route path="/gene-prioritization" element={<GenePrioritizationPipeline />} />
-              <Route path="/variant-file-prioritization" element={<VariantFilePrioritization />} />
-              <Route path="/saved-cases" element={<SavedCases />} />
-            </Routes>
-          </main>
-        </div>
-      </div>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/*"
+            element={
+              <RequireAuth>
+                <AppShell />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

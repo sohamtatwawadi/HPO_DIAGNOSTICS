@@ -500,6 +500,9 @@ export default function VariantFilePrioritization() {
     const file = fileRef.current?.files?.[0];
     if (!terms.trim() || !file) return;
     setJobStatus(null);
+    const name = (file.name || "").toLowerCase();
+    const fileFormat =
+      name.endsWith(".vcf") || name.endsWith(".vcf.gz") ? "vcf" : "auto";
     mut.mutate(
       {
         hpoTerms: terms,
@@ -507,6 +510,7 @@ export default function VariantFilePrioritization() {
         expandIc: expandIC,
         icExpansionThreshold: icThreshold,
         topN,
+        fileFormat,
         onStatusChange: setJobStatus,
       },
       { onSuccess: () => setFormCollapsed(true) }
@@ -520,7 +524,7 @@ export default function VariantFilePrioritization() {
     <div>
       <Topbar
         title="Variant file prioritization"
-        subtitle="Upload a VariMAT-style variant export; genes are ranked by HPO similarity and cross-referenced against ACMG classification. Runs as a background job for large (whole-exome/genome) files."
+        subtitle="Upload a VariMAT TSV export or an annotated VCF (.vcf / .vcf.gz). Genes are ranked by HPO similarity with ACMG / functional evidence (composite scoring). Annotated VCFs need gene + ACMG/ClinVar INFO (e.g. VEP CSQ)."
       />
 
       <Card style={{ marginBottom: 14 }}>
@@ -562,7 +566,11 @@ export default function VariantFilePrioritization() {
                 }}
               >
                 <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>
-                  VariMAT file (.txt / .tsv / .gz, up to 2GB upload · 5GB decompressed)
+                  Variant file (VariMAT .txt/.tsv/.gz or annotated .vcf/.vcf.gz)
+                </div>
+                <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 6, lineHeight: 1.4 }}>
+                  VCF must be annotated (VEP CSQ / SnpEff ANN + ACMG or ClinVar when available).
+                  Up to 2GB upload.
                 </div>
                 <div style={{ color: C.textMuted, wordBreak: "break-all", overflowWrap: "anywhere" }}>
                   {fileName || "Click to choose a file…"}
@@ -570,7 +578,7 @@ export default function VariantFilePrioritization() {
                 <input
                   ref={fileRef}
                   type="file"
-                  accept=".txt,.tsv,.gz,text/tab-separated-values,text/plain,application/gzip"
+                  accept=".txt,.tsv,.gz,.vcf,.vcf.gz,text/tab-separated-values,text/plain,application/gzip,text/vcf"
                   onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")}
                   style={{ display: "none" }}
                 />

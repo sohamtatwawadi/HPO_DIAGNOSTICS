@@ -21,11 +21,12 @@ if _local_pyhpo_pkg.is_file() and str(_repo_root) not in sys.path:
 if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
+import auth as auth_mod
 import cases_store
 import pyhpo_service as svc
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Cap on bytes actually received over HTTP (plain text or gzip). Uploads are
 # streamed straight to a temp file in chunks (see variant_prioritize_file),
@@ -40,6 +41,8 @@ _MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    auth_mod.init_users_db()
+    cases_store.init_db()
     svc.warm_all_caches()
     yield
 
@@ -117,6 +120,11 @@ class TermPathInput(BaseModel):
     term_b: str
 
 
+class AuthCredentials(BaseModel):
+    email: str
+    password: str = Field(min_length=8)
+
+
 @app.get("/api/health")
 def health():
     try:
@@ -126,8 +134,33 @@ def health():
     return {"status": "ready", "terms": n}
 
 
+@app.post("/api/auth/signup")
+def auth_signup(body: AuthCredentials):
+    try:
+        user = auth_mod.create_user(body.email, body.password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    token = auth_mod.issue_token(user)
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.post("/api/auth/login")
+def auth_login(body: AuthCredentials):
+    try:
+        user = auth_mod.authenticate_user(body.email, body.password)
+    except ValueError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    token = auth_mod.issue_token(user)
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(auth_mod.get_current_user)):
+    return {"user": user}
+
+
 @app.post("/api/resolve")
-def api_resolve_terms(body: TermsInput):
+def api_resolve_terms(body: TermsInput, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.resolve_terms(
             body.queries,
@@ -139,7 +172,7 @@ def api_resolve_terms(body: TermsInput):
 
 
 @app.post("/api/ic-profile")
-def ic_profile(body: TermsInput):
+def ic_profile(body: TermsInput, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.ic_profile(
             body.queries,
@@ -153,7 +186,9 @@ def ic_profile(body: TermsInput):
 
 
 @app.post("/api/gene-hpo-enrichment")
-def gene_hpo_enrichment(body: GeneHpoEnrichmentInput):
+def gene_hpo_enrichment(
+    body: GeneHpoEnrichmentInput, user: dict = Depends(auth_mod.get_current_user)
+):
     try:
         return svc.gene_list_hpo_enrichment(
             body.genes,
@@ -167,7 +202,9 @@ def gene_hpo_enrichment(body: GeneHpoEnrichmentInput):
 
 
 @app.post("/api/gene-prioritization")
-def gene_prioritization(body: GenePrioritizationInput):
+def gene_prioritization(
+    body: GenePrioritizationInput, user: dict = Depends(auth_mod.get_current_user)
+):
     if not 1 <= body.top_n <= 1000:
         raise HTTPException(400, "top_n must be between 1 and 1000")
     if not 0.0 <= body.ic_expansion_threshold <= 10.0:
@@ -196,6 +233,8 @@ async def variant_prioritize_file(
     expand_ic: bool = Form(True),
     ic_expansion_threshold: float = Form(2.0),
     top_n: int = Form(100),
+    file_format: str = Form("auto"),
+    user: dict = Depends(auth_mod.get_current_user),
 ):
     """
     Submit a VariMAT upload for background processing. Returns a job_id
@@ -220,7 +259,18 @@ async def variant_prioritize_file(
     if not queries:
         raise HTTPException(400, "No HPO terms provided")
 
-    fd, tmp_path = tempfile.mkstemp(suffix=".varimat.upload")
+    fmt = (file_format or "auto").strip().lower()
+    filename = (file.filename or "").lower()
+    if fmt == "auto":
+        if filename.endswith(".vcf.gz") or filename.endswith(".vcf"):
+            fmt = "vcf"
+        else:
+            fmt = "varimat"
+    if fmt not in {"varimat", "vcf"}:
+        raise HTTPException(400, "file_format must be auto | varimat | vcf")
+
+    suffix = ".vcf.upload" if fmt == "vcf" else ".varimat.upload"
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     try:
         total = 0
         with os.fdopen(fd, "wb") as tmp:
@@ -246,12 +296,15 @@ async def variant_prioritize_file(
         expand_ic=expand_ic,
         ic_expansion_threshold=ic_expansion_threshold,
         top_n=top_n,
+        file_format=fmt,
     )
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": job_id, "status": "queued", "file_format": fmt}
 
 
 @app.get("/api/variant-prioritize-file/status/{job_id}")
-def variant_prioritize_file_status(job_id: str):
+def variant_prioritize_file_status(
+    job_id: str, user: dict = Depends(auth_mod.get_current_user)
+):
     try:
         return svc.get_variant_prioritization_job(job_id)
     except ValueError as exc:
@@ -264,7 +317,9 @@ class VariantFileGeneDetailInput(BaseModel):
 
 
 @app.post("/api/variant-prioritize-file/gene-detail")
-def variant_prioritize_file_gene_detail(body: VariantFileGeneDetailInput):
+def variant_prioritize_file_gene_detail(
+    body: VariantFileGeneDetailInput, user: dict = Depends(auth_mod.get_current_user)
+):
     if not body.genes:
         raise HTTPException(400, "No genes provided")
     if len(body.genes) > 200:
@@ -278,7 +333,7 @@ def variant_prioritize_file_gene_detail(body: VariantFileGeneDetailInput):
 
 
 @app.post("/api/enrichment")
-def run_enrichment(body: EnrichmentInput):
+def run_enrichment(body: EnrichmentInput, user: dict = Depends(auth_mod.get_current_user)):
     if body.source not in {"omim", "gene", "orpha", "decipher"}:
         raise HTTPException(400, "source must be omim | gene | orpha | decipher")
     if body.mode not in {"diagnostic", "research"}:
@@ -302,7 +357,7 @@ def run_enrichment(body: EnrichmentInput):
 
 
 @app.post("/api/similarity")
-def compute_similarity(body: SimilarityInput):
+def compute_similarity(body: SimilarityInput, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.compute_similarity(
             body.patient1,
@@ -319,7 +374,7 @@ def compute_similarity(body: SimilarityInput):
 
 
 @app.post("/api/variant-prioritize")
-def prioritize_variants(body: VariantInput):
+def prioritize_variants(body: VariantInput, user: dict = Depends(auth_mod.get_current_user)):
     if body.mode not in {"diagnostic", "research"}:
         raise HTTPException(400, "mode must be diagnostic | research")
     try:
@@ -335,7 +390,9 @@ def prioritize_variants(body: VariantInput):
 
 
 @app.get("/api/disease")
-def get_disease(query: str, source: str = "omim"):
+def get_disease(
+    query: str, source: str = "omim", user: dict = Depends(auth_mod.get_current_user)
+):
     if source not in {"omim", "orpha"}:
         raise HTTPException(400, "source must be omim | orpha")
     try:
@@ -349,7 +406,7 @@ def get_disease(query: str, source: str = "omim"):
 
 
 @app.get("/api/term")
-def explore_term(query: str):
+def explore_term(query: str, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.explore_term(query)
     except Exception as exc:  # noqa: BLE001
@@ -357,7 +414,7 @@ def explore_term(query: str):
 
 
 @app.post("/api/term-path")
-def term_path(body: TermPathInput):
+def term_path(body: TermPathInput, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.term_path_to_other(body.term_a, body.term_b)
     except Exception as exc:  # noqa: BLE001
@@ -365,7 +422,7 @@ def term_path(body: TermPathInput):
 
 
 @app.post("/api/serialize")
-def serialize_profile(body: TermsInput):
+def serialize_profile(body: TermsInput, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.serialize_profile(body.queries)
     except ValueError as exc:
@@ -375,7 +432,9 @@ def serialize_profile(body: TermsInput):
 
 
 @app.post("/api/deserialize")
-def deserialize_profile(body: SerializedBody):
+def deserialize_profile(
+    body: SerializedBody, user: dict = Depends(auth_mod.get_current_user)
+):
     try:
         return svc.deserialize_profile(body.serialized)
     except Exception as exc:  # noqa: BLE001
@@ -383,7 +442,7 @@ def deserialize_profile(body: SerializedBody):
 
 
 @app.post("/api/cohort")
-def cohort(body: CohortInput):
+def cohort(body: CohortInput, user: dict = Depends(auth_mod.get_current_user)):
     try:
         return svc.cohort_analysis(
             body.patients,
@@ -406,28 +465,37 @@ class SaveCaseInput(BaseModel):
 
 
 @app.post("/api/cases")
-def save_case(body: SaveCaseInput):
+def save_case(body: SaveCaseInput, user: dict = Depends(auth_mod.get_current_user)):
     if not body.name.strip():
         raise HTTPException(400, "Case name is required")
     try:
-        case_id = cases_store.save_case(body.name.strip(), body.kind, body.params, body.result, body.notes)
+        case_id = cases_store.save_case(
+            body.name.strip(),
+            body.kind,
+            body.params,
+            body.result,
+            body.notes,
+            user_id=user["id"],
+        )
         return {"id": case_id}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/api/cases")
-def list_cases(kind: Optional[str] = None):
+def list_cases(
+    kind: Optional[str] = None, user: dict = Depends(auth_mod.get_current_user)
+):
     try:
-        return {"cases": cases_store.list_cases(kind=kind)}
+        return {"cases": cases_store.list_cases(user_id=user["id"], kind=kind)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/api/cases/{case_id}")
-def get_case(case_id: str):
+def get_case(case_id: str, user: dict = Depends(auth_mod.get_current_user)):
     try:
-        return cases_store.get_case(case_id)
+        return cases_store.get_case(case_id, user_id=user["id"])
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -435,9 +503,9 @@ def get_case(case_id: str):
 
 
 @app.delete("/api/cases/{case_id}")
-def delete_case(case_id: str):
+def delete_case(case_id: str, user: dict = Depends(auth_mod.get_current_user)):
     try:
-        deleted = cases_store.delete_case(case_id)
+        deleted = cases_store.delete_case(case_id, user_id=user["id"])
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, str(exc)) from exc
     if not deleted:

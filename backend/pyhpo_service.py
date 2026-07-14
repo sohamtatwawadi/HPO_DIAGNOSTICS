@@ -1667,67 +1667,20 @@ def _inheritance_flag(gene_row: dict) -> str | None:
     return None
 
 
-def variant_prioritization_from_file(
-    queries: list[str],
-    varimat_path: str,
+def _prioritize_parsed_variants(
+    hposet: Any,
+    parsed: dict[str, Any],
     *,
-    remove_modifiers: bool = False,
-    replace_obsolete: bool = True,
-    expand_ic: bool = True,
-    ic_expansion_threshold: float = 2.0,
-    top_n: int = 100,
+    failed_hpo: list[str],
+    expanded_terms: list[dict[str, Any]],
+    top_n: int,
+    source_label: str = "variant file",
 ) -> dict[str, Any]:
     """
-    Cross-reference a VariMAT variant export against the patient's HPO profile.
-
-    ``varimat_path`` is a path to the uploaded file on disk (plain text or
-    gzip) rather than pre-loaded content -- it's streamed and parsed line by
-    line (see :func:`_open_varimat_lines`, :func:`varimat_parser.parse_varimat_lines`)
-    so a multi-GB whole-genome export never needs to be held in memory whole.
-
-    Genes present in both the file and the ontology are ranked by HPO
-    similarity (reusing :func:`_score_catalog`, same as the gene
-    prioritization pipeline). Each ranked gene is annotated with its
-    Pathogenic/Likely Pathogenic variants from the file (VUS as fallback if
-    none), plus a bridge disease via :func:`_bridge_disease_for`.
-
-    Three result buckets, so nothing with a clinically relevant classification
-    is silently dropped:
-      * ``candidates``            -- genes with >=1 qualifying variant, ranked
-        by HPO similarity to the patient.
-      * ``ruled_out``             -- genes that matched the patient's
-        phenotype but only have Benign/Likely Benign variants in the file.
-      * ``no_phenotype_overlap``  -- genes with a qualifying variant in the
-        file that share zero HPO terms with the (possibly IC-expanded)
-        patient profile, so they can't be ranked but are still worth a look.
+    Shared scoring / bucketing / composite re-rank for VariMAT or VCF parses.
+    ``parsed`` must match the shape from ``parse_varimat_lines`` / ``parse_vcf_path``.
     """
     from pyhpo import Ontology
-    from varimat_parser import parse_varimat_lines
-
-    hposet, failed_hpo = build_hposet_from_queries(
-        queries, remove_modifiers=remove_modifiers, replace_obsolete=replace_obsolete
-    )
-    if hposet is None or len(hposet) == 0:
-        raise ValueError("No valid HPO terms resolved")
-
-    expanded_terms: list[dict[str, Any]] = []
-    if expand_ic:
-        hposet, expanded_terms = _expand_with_ic_filter(hposet, ic_threshold=ic_expansion_threshold)
-
-    # Only genes with an HPO annotation can ever be scored -- typically ~5k of the
-    # ~20k genes in a raw whole-exome/genome export. Filtering by this allowlist
-    # during parsing (rather than after) skips full record-building for the ~75%
-    # of rows that would be discarded anyway, which is where nearly all parsing
-    # time/memory goes at that scale.
-    gene_allowlist = {g.name.upper() for g in Ontology.genes}
-    lines, fh = _open_varimat_lines(varimat_path)
-    try:
-        try:
-            parsed = parse_varimat_lines(lines, gene_allowlist=gene_allowlist)
-        except (OSError, EOFError) as exc:
-            raise ValueError("Could not decompress .gz file — is it a valid gzip archive?") from exc
-    finally:
-        fh.close()
 
     resolved_by_name: dict[str, Any] = {}
     unresolved_genes: list[str] = []
@@ -1742,12 +1695,14 @@ def variant_prioritization_from_file(
 
     if not resolved_by_name:
         raise ValueError(
-            f"None of the {parsed['genes_seen_total']} gene symbol(s) in the VariMAT file "
+            f"None of the {parsed['genes_seen_total']} gene symbol(s) in the {source_label} "
             "could be matched to the PyHPO ontology."
         )
 
     resolved_genes = list(resolved_by_name.values())
-    gene_scores = _score_catalog(hposet, resolved_genes, top_n=len(resolved_genes), disambiguate_genes=True)
+    gene_scores = _score_catalog(
+        hposet, resolved_genes, top_n=len(resolved_genes), disambiguate_genes=True
+    )
     scored_names = {gr["name"] for gr in gene_scores}
 
     disease_results_full = _score_catalog(hposet, Ontology.omim_diseases, top_n=200)
@@ -1780,9 +1735,6 @@ def variant_prioritization_from_file(
         if row["candidate_variants"] and is_qc_clean:
             candidates.append(row)
         elif row["candidate_variants"]:
-            # Qualifying variant exists, but only as a QC-flagged (LowQD/LowCoverage/
-            # SnpCluster/...) call -- kept out of the ranked pool entirely so it can't
-            # outrank or dilute genes with a genuinely clean supporting variant.
             low_quality_only.append(row)
         else:
             ruled_out.append(row)
@@ -1791,7 +1743,6 @@ def variant_prioritization_from_file(
         for r in candidates:
             r["composite_score"] = round(_composite_score(r), 6)
 
-            # Rank breakdown — pick the best variant for display
             variants = r.get("candidate_variants") or []
             if variants:
                 best_v = max(
@@ -1803,9 +1754,7 @@ def variant_prioritization_from_file(
                 )
                 r["rank_breakdown"] = {
                     "hpo_combined_score": r.get("combined_score"),
-                    "pathogenicity_weight": round(
-                        _pathogenicity_weight(best_v), 3
-                    ),
+                    "pathogenicity_weight": round(_pathogenicity_weight(best_v), 3),
                     "inheritance_weight": round(
                         _inheritance_weight(
                             best_v.get("inheritance_mode", ""),
@@ -1813,14 +1762,10 @@ def variant_prioritization_from_file(
                         ),
                         3,
                     ),
-                    "frequency_weight": round(
-                        _frequency_weight(best_v.get("gnomad_af")), 3
-                    ),
+                    "frequency_weight": round(_frequency_weight(best_v.get("gnomad_af")), 3),
                 }
             else:
-                r["rank_breakdown"] = {
-                    "hpo_combined_score": r.get("combined_score"),
-                }
+                r["rank_breakdown"] = {"hpo_combined_score": r.get("combined_score")}
 
         for r in candidates:
             r["inheritance_flag"] = _inheritance_flag(r)
@@ -1836,17 +1781,13 @@ def variant_prioritization_from_file(
         r["rank"] = i + 1
     low_quality_only.sort(key=lambda r: -r["combined_score"])
 
-    # Genes with a qualifying variant but zero HPO overlap with the (possibly
-    # IC-expanded) patient profile: can't be ranked, but a real Pathogenic/VUS
-    # finding should never just vanish because the phenotype list didn't cover
-    # it. At whole-exome scale this bucket can hold thousands of genes, so the
-    # main response carries only a lightweight summary per gene; full detail
-    # for any of them is available via variant_file_gene_detail() + the token.
     no_phenotype_overlap_summary: list[dict[str, Any]] = []
     for gene_obj in resolved_genes:
         if gene_obj.name in scored_names:
             continue
-        pass_cand, flagged_cand, ro = _select_candidate_variants(variants_by_canonical.get(gene_obj.name, []))
+        pass_cand, flagged_cand, ro = _select_candidate_variants(
+            variants_by_canonical.get(gene_obj.name, [])
+        )
         cand = pass_cand or flagged_cand
         if not cand:
             continue
@@ -1888,6 +1829,74 @@ def variant_prioritization_from_file(
         },
         "hposet_size": len(hposet),
     }
+
+
+def variant_prioritization_from_file(
+    queries: list[str],
+    varimat_path: str,
+    *,
+    remove_modifiers: bool = False,
+    replace_obsolete: bool = True,
+    expand_ic: bool = True,
+    ic_expansion_threshold: float = 2.0,
+    top_n: int = 100,
+    file_format: str = "varimat",
+) -> dict[str, Any]:
+    """
+    Cross-reference a VariMAT TSV or annotated VCF against the patient's HPO profile.
+
+    ``file_format`` is ``"varimat"`` or ``"vcf"``. Both produce the same candidate
+    / ruled-out buckets and composite ranking path.
+    """
+    from pyhpo import Ontology
+
+    fmt = (file_format or "varimat").strip().lower()
+    if fmt not in {"varimat", "vcf"}:
+        raise ValueError("file_format must be varimat or vcf")
+
+    hposet, failed_hpo = build_hposet_from_queries(
+        queries, remove_modifiers=remove_modifiers, replace_obsolete=replace_obsolete
+    )
+    if hposet is None or len(hposet) == 0:
+        raise ValueError("No valid HPO terms resolved")
+
+    expanded_terms: list[dict[str, Any]] = []
+    if expand_ic:
+        hposet, expanded_terms = _expand_with_ic_filter(hposet, ic_threshold=ic_expansion_threshold)
+
+    gene_allowlist = {g.name.upper() for g in Ontology.genes}
+
+    if fmt == "vcf":
+        from vcf_parser import VcfParseError, parse_vcf_path
+
+        try:
+            parsed = parse_vcf_path(varimat_path, gene_allowlist=gene_allowlist)
+        except VcfParseError as exc:
+            raise ValueError(str(exc)) from exc
+        source_label = "VCF file"
+    else:
+        from varimat_parser import parse_varimat_lines
+
+        lines, fh = _open_varimat_lines(varimat_path)
+        try:
+            try:
+                parsed = parse_varimat_lines(lines, gene_allowlist=gene_allowlist)
+            except (OSError, EOFError) as exc:
+                raise ValueError("Could not decompress .gz file — is it a valid gzip archive?") from exc
+        finally:
+            fh.close()
+        source_label = "VariMAT file"
+
+    result = _prioritize_parsed_variants(
+        hposet,
+        parsed,
+        failed_hpo=failed_hpo,
+        expanded_terms=expanded_terms,
+        top_n=top_n,
+        source_label=source_label,
+    )
+    result["file_format"] = fmt
+    return result
 
 
 def warm_all_caches() -> None:

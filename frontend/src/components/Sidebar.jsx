@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { C } from "../tokens";
+import { useAuth } from "../auth/AuthContext";
 
 const linkStyle = ({ isActive }) => ({
   display: "block",
@@ -26,6 +27,8 @@ const NAV_NEW = [
 ];
 
 export default function Sidebar() {
+  const { user, logout } = useAuth();
+
   return (
     <aside
       style={{
@@ -34,6 +37,8 @@ export default function Sidebar() {
         background: C.sidebar,
         padding: "20px 14px",
         flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
       }}
     >
       <div
@@ -50,7 +55,7 @@ export default function Sidebar() {
       <div style={{ fontSize: 18, fontWeight: 700, color: C.sidebarText, marginBottom: 20 }}>
         Clinical workspace
       </div>
-      <nav>
+      <nav style={{ flex: 1 }}>
         {NAV.map(([to, label]) => (
           <NavLink key={to} to={to} style={linkStyle}>
             {label}
@@ -91,6 +96,43 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      <div
+        style={{
+          borderTop: "1px solid rgba(255,255,255,0.12)",
+          paddingTop: 14,
+          marginTop: 12,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            color: C.sidebarMuted,
+            marginBottom: 8,
+            wordBreak: "break-all",
+          }}
+          title={user?.email}
+        >
+          {user?.email || "Signed in"}
+        </div>
+        <button
+          type="button"
+          onClick={logout}
+          style={{
+            width: "100%",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.2)",
+            background: "transparent",
+            color: C.sidebarText,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: C.fontUi,
+          }}
+        >
+          Log out
+        </button>
+      </div>
     </aside>
   );
 }
