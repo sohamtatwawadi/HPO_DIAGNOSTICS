@@ -1,5 +1,5 @@
 """
-HPO Diagnostics API — FastAPI + PyHPO 4.
+VarMatch.AI API — FastAPI + PyHPO 4.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="HPO Diagnostics API", lifespan=lifespan)
+app = FastAPI(title="VarMatch.AI API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -574,7 +574,7 @@ else:
     @app.get("/")
     def root_no_spa():
         return {
-            "service": "HPO Diagnostics API",
+            "service": "VarMatch.AI API",
             "detail": "Frontend static files not found on this server.",
             "api_health": "/api/health",
             "openapi_docs": "/docs",

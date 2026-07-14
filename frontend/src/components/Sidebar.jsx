@@ -41,19 +41,8 @@ export default function Sidebar() {
         flexDirection: "column",
       }}
     >
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: "0.06em",
-          color: C.sidebarMuted,
-          marginBottom: 12,
-        }}
-      >
-        HPO DIAGNOSTICS
-      </div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: C.sidebarText, marginBottom: 20 }}>
-        Clinical workspace
+      <div style={{ fontSize: 20, fontWeight: 700, color: C.sidebarText, marginBottom: 20, letterSpacing: "-0.02em" }}>
+        VarMatch<span style={{ color: C.sidebarMuted }}>.AI</span>
       </div>
       <nav style={{ flex: 1 }}>
         {NAV.map(([to, label]) => (

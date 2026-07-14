@@ -57,16 +57,16 @@ export default function Login() {
       >
         <div
           style={{
-            fontSize: 11,
+            fontSize: 28,
             fontWeight: 700,
-            letterSpacing: "0.06em",
-            color: C.textMuted,
-            marginBottom: 8,
+            color: C.text,
+            letterSpacing: "-0.02em",
+            marginBottom: 20,
           }}
         >
-          HPO DIAGNOSTICS
+          VarMatch<span style={{ color: C.accent }}>.AI</span>
         </div>
-        <h1 style={{ margin: "0 0 8px", fontSize: 24, color: C.text }}>
+        <h1 style={{ margin: "0 0 8px", fontSize: 20, color: C.text }}>
           {mode === "login" ? "Log in" : "Create account"}
         </h1>
         <p style={{ margin: "0 0 24px", fontSize: 14, color: C.textSecondary, lineHeight: 1.5 }}>
