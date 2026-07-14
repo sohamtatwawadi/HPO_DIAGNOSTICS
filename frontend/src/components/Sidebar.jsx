@@ -14,16 +14,13 @@ const linkStyle = ({ isActive }) => ({
 });
 
 const NAV = [
+  ["/gene-prioritization", "Gene prioritization"],
+  ["/variant-file-prioritization", "Variant file prioritization"],
+  ["/saved-cases", "Saved cases"],
   ["/ddx", "Differential diagnosis"],
   ["/disease", "Disease deep-dive"],
   ["/term-explorer", "HPO term explorer"],
   ["/ic-profiler", "IC profiler"],
-];
-
-const NAV_NEW = [
-  ["/gene-prioritization", "★ Gene prioritization", "new"],
-  ["/variant-file-prioritization", "★ Variant file prioritization", "new"],
-  ["/saved-cases", "★ Saved cases", "new"],
 ];
 
 export default function Sidebar() {
@@ -48,40 +45,6 @@ export default function Sidebar() {
         {NAV.map(([to, label]) => (
           <NavLink key={to} to={to} style={linkStyle}>
             {label}
-          </NavLink>
-        ))}
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.06em",
-            color: C.sidebarMuted,
-            margin: "16px 0 8px",
-          }}
-        >
-          New modules
-        </div>
-        {NAV_NEW.map(([to, label, badge]) => (
-          <NavLink key={to} to={to} style={linkStyle}>
-            <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span>{label}</span>
-              {badge && (
-                <span
-                  style={{
-                    fontSize: 9,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    color: C.sidebar,
-                    background: "#FBBF24",
-                    padding: "2px 6px",
-                    borderRadius: 4,
-                  }}
-                >
-                  {badge}
-                </span>
-              )}
-            </span>
           </NavLink>
         ))}
       </nav>
